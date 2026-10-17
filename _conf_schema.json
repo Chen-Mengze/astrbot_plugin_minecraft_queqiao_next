@@ -22,7 +22,7 @@
           "target_sessions": {
             "type": "list",
             "description": "目标会话",
-            "hint": "MC服务器消息互通的目标会话UMO列表。可通过 AstrBot 自带 /sid 指令获取，格式如 aiocqhttp:GroupMessage:123456789。用于MC消息转发到外部、外部消息转发到MC以及区分指令所属服务器",
+            "hint": "MC服务器消息互通的目标会话UMO列表：MC消息转发到这些会话、这些会话的消息转发到MC、会话内的 mc 指令归属该服务器。推荐在目标群/私聊里用 mc target add 自动绑定（无需手写 UMO）；也可用 AstrBot 的 /sid 获取后手填，如 aiocqhttp:GroupMessage:123456789。开启「隔离对话」后 UMO 会带发送者前缀（如 aiocqhttp:GroupMessage:1507157577_297223059），插件按群号自动归一匹配，无需为每个成员各配一条",
             "default": []
           },
           "server": {

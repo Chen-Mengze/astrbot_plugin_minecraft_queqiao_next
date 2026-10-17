@@ -1231,7 +1231,7 @@ _pi26.message_bridge.register_server(_cfgI26)
 _instI26 = _Inst26()
 _pi26.server_manager._servers["IMG"] = _instI26
 _evI26 = _Ev26(images=[_Img26(url="https://gchat.qpic.cn/a/b.png")])
-assert _run26(_pi26._relay_to_minecraft(_evI26, "umo:GroupMessage:9", "",
+assert _run26(_pi26._relay_to_minecraft(_evI26, "",
                                         [_evI26._images[0]])) is True
 assert _instI26.client.sent == [
     ("[QQ]群友A: [[CICode,url=https://gchat.qpic.cn/a/b.png,name=图片]]", "white"),
@@ -1246,7 +1246,7 @@ _instI26b = _Inst26()
 _pi26b.server_manager._servers["IMG"] = _instI26b
 assert _run26(_pi26b._relay_to_minecraft(
     _Ev26(images=[_Img26(url="https://gchat.qpic.cn/a/b.png")]),
-    "umo:GroupMessage:9", "", [_Img26(url="https://gchat.qpic.cn/a/b.png")])) is False
+    "", [_Img26(url="https://gchat.qpic.cn/a/b.png")])) is False
 assert _instI26b.client.sent == [], "关闭转发后图片不得进入游戏"
 
 # d3) 文本 + 图片 → 文本与 CICode 拼接在同一广播里
@@ -1256,7 +1256,7 @@ _instI26c = _Inst26()
 _pi26c.server_manager._servers["IMG"] = _instI26c
 _imgc = _Img26(url="https://qpic.cn/c.png")
 assert _run26(_pi26c._relay_to_minecraft(
-    _Ev26(text="看看这张图", images=[_imgc]), "umo:GroupMessage:9",
+    _Ev26(text="看看这张图", images=[_imgc]),
     "看看这张图", [_imgc])) is True
 assert _instI26c.client.sent == [
     ("[QQ]群友A: 看看这张图 [[CICode,url=https://qpic.cn/c.png,name=图片]]", "white"),
@@ -1272,7 +1272,7 @@ _instI26d = _Inst26()
 _pi26d.server_manager._servers["IMG"] = _instI26d
 assert _run26(_pi26d._relay_to_minecraft(
     _Ev26(images=[_Img26(url="https://qpic.cn/d.png")]),
-    "umo:GroupMessage:9", "", [_Img26(url="https://qpic.cn/d.png")])) is False
+    "", [_Img26(url="https://qpic.cn/d.png")])) is False
 assert _instI26d.client.sent == [], "配置转发前缀后裸图片不得转发"
 
 # d5) 图片无公开 URL（base64 且注册失败）→ 跳过图片，文本仍转发
@@ -1282,7 +1282,7 @@ _pi26e.message_bridge.register_server(_cfgI26)
 _instI26e = _Inst26()
 _pi26e.server_manager._servers["IMG"] = _instI26e
 assert _run26(_pi26e._relay_to_minecraft(
-    _Ev26(text="带图消息", images=[_img_b64]), "umo:GroupMessage:9",
+    _Ev26(text="带图消息", images=[_img_b64]),
     "带图消息", [_img_b64])) is True
 assert _instI26e.client.sent == [
     ("[QQ]群友A: 带图消息", "white"),
@@ -2796,7 +2796,8 @@ _smem34c = _SS34().to_dict()
 assert _cpm34(
     _smem34c, {"MemTotal": 8 * 1024 ** 3, "MemAvailable": 2 * 1024 ** 3}
 ) is _smem34c
-# 读不到 meminfo（非 Windows）：无法判定部署形态 → 清零隐藏
+# 读不到 meminfo：非 Windows 无法判定部署形态 → 清零隐藏；
+# Windows 上鹊桥读的是可用物理内存（无页缓存虚高），按模块文档保留原值
 _orig_read34 = _hm34.read_host_meminfo
 _hm34.read_host_meminfo = lambda: None  # type: ignore[method-assign]
 try:
@@ -2805,8 +2806,11 @@ try:
         memory_percentage=87.5,
     ).to_dict()
     _cmem34d = _cpm34(_smem34d)
-    assert _cmem34d["memory_total"] == 0, _cmem34d
-    assert _cmem34d["memory_usage_text"] == "未知", _cmem34d
+    if os.name == "nt":
+        assert _cmem34d["memory_total"] == 8 * 1024 ** 3, _cmem34d
+    else:
+        assert _cmem34d["memory_total"] == 0, _cmem34d
+        assert _cmem34d["memory_usage_text"] == "未知", _cmem34d
 finally:
     _hm34.read_host_meminfo = _orig_read34
 
@@ -5768,3 +5772,285 @@ assert _run49(_pi50h.on_message(_ev50h)) == []
 assert _inst50h.client.sent == [("[QQ]群友A: @Player_D 1", "white")], \
     _inst50h.client.sent
 print("OK  回复游戏消息反解玩家名 / 非游戏消息不加 @ / 自定义格式与显示名 / 非法玩家名 全通过")
+
+print("\n=== 51. 会话匹配（隔离对话）/ 重复转发防护 / mc target 免 UMO 绑定 ===")
+import copy as _copy51
+from astrbot_plugin_minecraft_queqiao.core.session_router import (
+    composite_group_id as _cgi51,
+    event_session_ref as _esr51,
+    normalize_message_type as _nmt51,
+    parse_session_entry as _pse51,
+    send_target_key as _stk51,
+    session_matches as _sm51,
+    split_umo as _sumo51,
+)
+from astrbot_plugin_minecraft_queqiao.services.message_bridge import MessageBridge as _MB51
+from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P51
+
+# ---- (a) UMO 解析 / 归一 ----
+assert _sumo51("aiocqhttp:GroupMessage:123456789") == (
+    "aiocqhttp", "GroupMessage", "123456789")
+assert _sumo51("aiocqhttp:123456789") == ("aiocqhttp", "", "123456789"), "两段简写"
+assert _sumo51("123456789") == ("", "", "123456789"), "裸会话 ID"
+assert _sumo51("matrix:GroupMessage:!room:example.org") == (
+    "matrix", "GroupMessage", "!room:example.org"), "会话 ID 自带冒号须完整保留"
+assert _nmt51("groupmessage") == "GroupMessage"
+assert _nmt51("MessageType.GROUP_MESSAGE") == "GroupMessage"
+assert _nmt51(None) == ""
+# 隔离对话复合会话 ID：仅「纯数字_纯数字」才认定为 发送者_群号，避免误拆真实带下划线会话
+assert _pse51("aiocqhttp:GroupMessage:1507157577_297223059").derived_group_id == "297223059"
+assert _pse51("lark:GroupMessage:oc_abc").derived_group_id == "", "带下划线真实会话不得误拆"
+assert _cgi51("FriendMessage", "1507157577_297223059") == ""
+
+# ---- (b) 事件解析 + 同一群不同发送者都能匹配 ----
+class _Sender51:
+    def __init__(self, user_id="", nickname="群友"):
+        self.user_id = user_id
+        self.nickname = nickname
+
+class _MsgObj51:
+    def __init__(self, message_id=""):
+        self.message_id = message_id
+
+class _Ev51:
+    """外部消息事件桩：对齐 AstrBot 真实事件 API（含隔离对话复合会话 ID）。"""
+
+    def __init__(self, umo="", platform_id="", message_type="", session_id="",
+                 group_id="", self_id="", sender_id="", sender_name="群友A",
+                 text="", images=(), message_id="", message_obj=None):
+        self.unified_msg_origin = umo
+        self._platform_id = platform_id
+        self._message_type = message_type
+        self._session_id = session_id
+        self._group_id = group_id
+        self._self_id = self_id
+        self._sender = _Sender51(sender_id, sender_name)
+        self._text = text
+        self._images = list(images)
+        self.message_obj = message_obj if message_obj is not None else _MsgObj51(message_id)
+        self.stopped = False
+        self.is_at_or_wake_command = False
+
+    def get_message_str(self): return self._text
+    def get_messages(self): return list(self._images)
+    def get_sender_name(self): return self._sender.nickname
+    def get_sender_id(self): return self._sender.user_id
+    def get_platform_name(self): return self.get_platform_id() or "umo"
+    def get_platform_id(self): return self._platform_id
+    def get_message_type(self):
+        return types.SimpleNamespace(value=self._message_type) if self._message_type else ""
+    def get_session_id(self): return self._session_id
+    def get_group_id(self): return self._group_id
+    def get_self_id(self): return self._self_id
+    def get_extra(self, key=None, default=None): return default
+    def stop_event(self): self.stopped = True
+    def plain_result(self, text): return text
+
+# AstrBot 隔离对话（unique_session）：同群不同成员的 UMO 只有发送者前缀不同
+_ev_a51 = _Ev51(umo="Minecraft:GroupMessage:1507157577_297223059",
+                platform_id="Minecraft", message_type="GroupMessage",
+                session_id="1507157577_297223059", group_id="297223059",
+                sender_id="1507157577")
+_ev_b51 = _Ev51(umo="Minecraft:GroupMessage:888888_297223059",
+                platform_id="Minecraft", message_type="GroupMessage",
+                session_id="888888_297223059", group_id="297223059",
+                sender_id="888888")
+_ref_a51 = _esr51(_ev_a51)
+assert _ref_a51.channel == "297223059", _ref_a51
+assert _ref_a51.canonical == "Minecraft:GroupMessage:297223059", _ref_a51.canonical
+_target51 = _pse51("Minecraft:GroupMessage:1507157577_297223059")
+assert _sm51(_target51, _ref_a51) is True
+assert _sm51(_target51, _esr51(_ev_b51)) is True, "同一群其它成员必须也匹配"
+assert _sm51(_target51, _esr51(_Ev51(
+    umo="Minecraft:GroupMessage:1507157577_111111", platform_id="Minecraft",
+    message_type="GroupMessage", session_id="1507157577_111111",
+    group_id="111111", sender_id="1507157577"))) is False, "不同群不得误匹配"
+
+# ---- (c) 目标会话去重：同群多条 UMO 只发一次 ----
+_sent51 = []
+
+class _Ctx51:
+    async def send_message(self, umo, chain):
+        _sent51.append((umo, chain.chain[0].text)); return True
+
+_dup_targets51 = [
+    "Minecraft:GroupMessage:1507157577_297223059",
+    "Minecraft:GroupMessage:888888_297223059",
+    "Minecraft:GroupMessage:297223059",
+]
+_cfg51 = SC.from_dict({"server": {"server_name": "S51"},
+    "message": {"target_sessions": _dup_targets51, "forward_chat_to_astrbot": True}})
+_br51 = _MB51(_Ctx51())
+_br51.register_server(_cfg51)
+_plan51 = _br51.resolve_send_targets(_cfg51)
+assert len(_plan51) == 1, "同群多条 UMO 必须合并成一次发送: " + repr(_plan51)
+assert _plan51[0][0] == "Minecraft:GroupMessage:1507157577_297223059", _plan51
+
+async def _run51():
+    await _br51.forward_event("S51", _cfg51, QueQiaoEvent.from_dict({
+        "event_name": "PlayerChatEvent", "message": "hi",
+        "player": {"nickname": "Steve"}}))
+
+asyncio.run(_run51())
+assert len(_sent51) == 1 and _sent51[0][0] == "Minecraft:GroupMessage:1507157577_297223059", _sent51
+# MC → 群发出的内容被平台回传：识别为回声，不再转发进 MC（且只吞一次）
+_ev_echo51 = _Ev51(umo="Minecraft:GroupMessage:555555_297223059",
+                   platform_id="Minecraft", message_type="GroupMessage",
+                   session_id="555555_297223059", group_id="297223059",
+                   sender_id="555555", text="[MC]Steve: hi")
+assert _br51.is_outbound_echo(_ev_echo51, "[MC]Steve: hi") is True
+assert _br51.is_outbound_echo(_ev_echo51, "[MC]Steve: hi") is False, "同一回声只吞一次"
+assert _br51.is_outbound_echo(_ev_echo51, "大家好") is False, "普通群消息不受影响"
+
+# ---- (d) 短写法（裸群号）经事件学习后可回填发送 ----
+_cfg51b = SC.from_dict({"server": {"server_name": "S51b"},
+    "message": {"target_sessions": ["297223059"]}})
+_br51b = _MB51(_Ctx51())
+_br51b.register_server(_cfg51b)
+assert _br51b.resolve_send_targets(_cfg51b) == [], "未见过该会话前无法解析短写法"
+assert [s for s, _ in _br51b.servers_for_event(_ev_b51)] == ["S51b"], "裸群号应能匹配事件"
+assert _br51b.resolve_send_targets(_cfg51b) == [(
+    "Minecraft:GroupMessage:297223059",
+    _stk51(_pse51("Minecraft:GroupMessage:297223059")),
+)], "事件学习后应能回填规范 UMO"
+
+# ---- (e) on_message：Bot 自身消息 / 重复投递 / 平台回传一律不转发 ----
+class _Cli51:
+    def __init__(self): self.sent = []
+    async def broadcast(self, text, color="white"):
+        self.sent.append((text, color)); return True
+
+class _Inst51:
+    def __init__(self):
+        self.client = _Cli51(); self.connected = True
+
+def _mk51(cfg_dict):
+    pi = _P51(_Ctx51(), {})
+    cfg = SC.from_dict(cfg_dict)
+    pi.message_bridge.register_server(cfg)
+    inst = _Inst51()
+    pi.server_manager._servers[cfg.server_name] = inst
+    return pi, cfg, inst
+
+_cfg_plain51 = {"server": {"server_name": "S51c"},
+    "message": {"target_sessions": ["umo:GroupMessage:9"]}}
+
+# Bot 自己发的消息（self_id == sender_id）→ 不转发
+_pi51a, _cfg51c, _inst51a = _mk51(_cfg_plain51)
+_ev_self51 = _Ev51(umo="umo:GroupMessage:9", platform_id="umo",
+                   message_type="GroupMessage", session_id="9",
+                   self_id="10001", sender_id="10001", text="我是机器人")
+assert _run49(_pi51a.on_message(_ev_self51)) == []
+assert _inst51a.client.sent == [], "Bot 自身消息不得转发进 MC"
+
+# 同一条消息事件重复投递（相同 message_id）→ 只转发一次
+_pi51d, _cfg51d, _inst51d = _mk51(_cfg_plain51)
+_ev_dup51 = _Ev51(umo="umo:GroupMessage:9", platform_id="umo",
+                  message_type="GroupMessage", session_id="9",
+                  sender_id="20002", text="重复测试", message_id="999")
+assert _run49(_pi51d.on_message(_ev_dup51)) == []
+assert _inst51d.client.sent == [("[umo]群友A: 重复测试", "white")], _inst51d.client.sent
+assert _run49(_pi51d.on_message(_ev_dup51)) == []
+assert len(_inst51d.client.sent) == 1, "重复投递的消息只能转发一次"
+
+# 插件刚发往该会话的 MC 消息被平台回传 → 不再转发进 MC
+_pi51e, _cfg51e, _inst51e = _mk51(_cfg_plain51)
+_pi51e.message_bridge.mark_outbound(
+    _stk51(_pse51("umo:GroupMessage:9")), "[MC]Steve: hi")
+_ev_echo51b = _Ev51(umo="umo:GroupMessage:9", platform_id="umo",
+                    message_type="GroupMessage", session_id="9",
+                    sender_id="30003", text="[MC]Steve: hi")
+assert _run49(_pi51e.on_message(_ev_echo51b)) == []
+assert _inst51e.client.sent == [], "平台回传的自发内容不得再转发进 MC"
+
+# ---- (f) mc target add / remove：免手写 UMO，自动收敛为规范群号 ----
+class _CfgStore51(dict):
+    """插件配置桩：支持 AstrBot 的 save_config_async(replace_config) 语义。"""
+
+    def __init__(self, data):
+        super().__init__(data)
+        self.saved = []
+
+    async def save_config_async(self, replace_config=None, indent=2):
+        if isinstance(replace_config, dict):
+            self.update(replace_config)
+        self.saved.append(_copy51.deepcopy(dict(self)))
+        return True
+
+_conf51 = _CfgStore51({"enabled": True, "mc_servers": [{
+    "__template_key": "server",
+    "enabled": True,
+    "target_sessions": ["Minecraft:GroupMessage:1507157577_297223059"],
+    "server": {"server_name": "S51t", "display_name": "生存服"},
+}]})
+_pi51t = _P51(_Ctx51(), _conf51)
+_cfg51t = SC.from_dict(_conf51["mc_servers"][0])
+_pi51t._configs["S51t"] = _cfg51t
+_pi51t.message_bridge.register_server(_cfg51t)
+_inst51t = _Inst51()
+_inst51t.config = _cfg51t
+_inst51t.server_name = "S51t"
+_pi51t.server_manager._servers["S51t"] = _inst51t
+
+_ev_new_group51 = _Ev51(umo="Minecraft:GroupMessage:777_555555",
+                        platform_id="Minecraft", message_type="GroupMessage",
+                        session_id="777_555555", group_id="555555", sender_id="777")
+_add_msg51 = asyncio.run(_pi51t._handle_target_command(_ev_new_group51, "add"))
+assert "✅" in _add_msg51, _add_msg51
+assert _cfg51t.target_sessions == [
+    "Minecraft:GroupMessage:1507157577_297223059",
+    "Minecraft:GroupMessage:555555"], _cfg51t.target_sessions
+# 落盘：只改目标会话，条目的其余字段原样保留
+assert _conf51["mc_servers"][0]["target_sessions"] == [
+    "Minecraft:GroupMessage:1507157577_297223059",
+    "Minecraft:GroupMessage:555555"]
+assert _conf51["mc_servers"][0]["server"]["display_name"] == "生存服"
+assert len(_conf51.saved) == 1
+# 就地重建桥接索引：新群事件立刻命中，不必热重载
+assert [s for s, _ in _pi51t.message_bridge.servers_for_event(_ev_new_group51)] == ["S51t"]
+assert [s for s, _ in _pi51t.message_bridge.servers_for_event(_ev_b51)] == ["S51t"]
+
+# 重复添加 → 提示已绑定，不重复写配置
+_dup_msg51 = asyncio.run(_pi51t._handle_target_command(_ev_new_group51, "add"))
+assert "已绑定" in _dup_msg51, _dup_msg51
+assert len(_cfg51t.target_sessions) == 2
+
+# 查看：当前会话所在绑定被标 ✅
+_overview51 = asyncio.run(_pi51t._handle_target_command(_ev_new_group51, ""))
+assert "🎯" in _overview51, _overview51
+assert "Minecraft:GroupMessage:555555" in _overview51, _overview51
+assert "✅" in _overview51, "当前会话应被标出"
+
+# 移除当前会话 → 配置与运行时同步，其它群绑定不受影响
+_rm_msg51 = asyncio.run(_pi51t._handle_target_command(_ev_new_group51, "remove"))
+assert "✅" in _rm_msg51, _rm_msg51
+assert _cfg51t.target_sessions == [
+    "Minecraft:GroupMessage:1507157577_297223059"], _cfg51t.target_sessions
+assert _conf51["mc_servers"][0]["target_sessions"] == [
+    "Minecraft:GroupMessage:1507157577_297223059"]
+assert len(_conf51.saved) == 2, "重复添加不得重复落盘"
+assert _pi51t.message_bridge.servers_for_event(_ev_new_group51) == []
+
+# ---- (g) 面板「功能设置」保存目标会话后同样立即重建索引 ----
+_cfg_g51 = SC.from_dict({"server": {"server_name": "S51g"},
+    "message": {"target_sessions": ["umo:GroupMessage:1"]}})
+_pi51g = _P51(_Ctx51(), {})
+_pi51g._configs["S51g"] = _cfg_g51
+_pi51g.message_bridge.register_server(_cfg_g51)
+assert [s for s, _ in _pi51g.message_bridge.servers_for_session(
+    "umo:GroupMessage:1")] == ["S51g"]
+assert _pi51g.apply_soft_config("S51g", {"target_sessions": ["umo:GroupMessage:2"]}) is True
+assert [s for s, _ in _pi51g.message_bridge.servers_for_event(_Ev51(
+    umo="umo:GroupMessage:2", platform_id="umo", message_type="GroupMessage",
+    session_id="2"))] == ["S51g"], "目标会话变更后必须立即重建索引"
+assert _pi51g.message_bridge.servers_for_event(_Ev51(
+    umo="umo:GroupMessage:1", platform_id="umo", message_type="GroupMessage",
+    session_id="1")) == [], "旧会话绑定必须立即失效"
+
+# ---- (h) help 文案已同步 mc target ----
+_help51 = CommandHandler(_SM31([]), None, None).help_text()
+assert "mc target —" in _help51, _help51
+assert "mc target add [编号]" in _help51, _help51
+assert "mc target remove [编号]" in _help51, _help51
+print("OK  UMO 归一 / 隔离对话同群全成员匹配 / 目标去重只发一次 / "
+      "回声与重复投递拦截 / mc target 绑定收敛规范群号且免热重载 / help 同步")

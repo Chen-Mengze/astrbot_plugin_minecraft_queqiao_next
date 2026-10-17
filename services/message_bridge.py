@@ -11,6 +11,7 @@
 import json
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
@@ -25,12 +26,21 @@ from ..core.constants import (
     IMAGE_DOWNLOAD_TIMEOUT,
     MARK_TEXT_OK,
     MAX_IMAGE_DOWNLOAD_BYTES,
+    OUTBOUND_ECHO_WINDOW,
     PLUGIN_NAME,
     prefix_matches,
     strip_prefix,
 )
 from ..core.models import QueQiaoEvent
 from ..core.models_config import ServerConfig
+from ..core.session_router import (
+    GROUP_MESSAGE,
+    SessionRef,
+    event_session_ref,
+    parse_session_entry,
+    send_target_key,
+    session_matches,
+)
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
@@ -283,6 +293,15 @@ async def download_image_bytes(
     return data
 
 
+@dataclass(frozen=True)
+class _SessionTarget:
+    """一条目标会话配置：服务器 + 归一化后的会话信息。"""
+
+    server_name: str
+    config: ServerConfig
+    ref: SessionRef
+
+
 class MessageBridge:
     """负责 MC 事件到外部会话的格式化与发送。"""
 
@@ -291,28 +310,90 @@ class MessageBridge:
         # 本地翻译器（插件侧把鹊桥英文/翻译键转中文），None 表示未启用
         self._translator = translator
         self._configs: dict[str, ServerConfig] = {}
-        # 会话 UMO -> [(server_name, config)]，用于外部消息反查目标服务器
-        self._session_to_servers: dict[str, list[tuple[str, ServerConfig]]] = {}
+        # 全部目标会话（每次注册 / 本地更新时重建），匹配走 core.session_router：
+        # 兼容 AstrBot 隔离对话（unique_session）的「发送者ID_群ID」复合会话 ID
+        self._targets: list[_SessionTarget] = []
+        # 目标会话原始写法 -> 实际可发送的规范 UMO（事件里学到，供短写法回填）
+        self._learned_sessions: dict[str, str] = {}
+        # 已告警过的不可解析目标会话，避免每来一条消息刷一次日志
+        self._unresolved_warned: set[str] = set()
+        # 会话去重键 -> [(刚发往该会话的内容, 时间)]，用于识别平台回传的
+        # Bot 自身消息（MC → 群 → MC 方向的回声）
+        self._recent_outbound: dict[str, list[tuple[str, float]]] = {}
         # (server_name, content) -> 转发时间，用于回声抑制
         self._recently_forwarded: dict[tuple[str, str], float] = {}
 
+    # ---- 服务器 / 目标会话注册 ----
+
     def register_server(self, config: ServerConfig) -> None:
-        """注册服务器并建立目标会话的反向索引。"""
+        """注册服务器并重建目标会话索引（重复注册等于就地更新）。"""
         self._configs[config.server_name] = config
-        for umo in config.target_sessions:
-            entries = self._session_to_servers.setdefault(umo, [])
-            if all(sid != config.server_name for sid, _ in entries):
-                entries.append((config.server_name, config))
+        self._rebuild_targets()
+
+    def unregister_server(self, server_name: str) -> None:
+        """取消注册某台服务器（配置删除 / 热重载前清理）。"""
+        self._configs.pop(server_name, None)
+        self._rebuild_targets()
+
+    def reregister_server(self, config: ServerConfig) -> None:
+        """配置就地更新后重建索引（等价 register_server，语义更明确）。"""
+        self.register_server(config)
+
+    def _rebuild_targets(self) -> None:
+        self._targets = [
+            _SessionTarget(
+                server_name=config.server_name,
+                config=config,
+                ref=parse_session_entry(raw),
+            )
+            for config in self._configs.values()
+            for raw in config.target_sessions
+            if str(raw or "").strip()
+        ]
 
     def clear(self) -> None:
         """清空已注册服务器索引，供配置热重载前重置使用。"""
         self._configs.clear()
-        self._session_to_servers.clear()
+        self._targets.clear()
+        self._learned_sessions.clear()
+        self._unresolved_warned.clear()
+        self._recent_outbound.clear()
         self._recently_forwarded.clear()
 
     def servers_for_session(self, umo: str) -> list[tuple[str, ServerConfig]]:
-        """查询某会话绑定的服务器列表。"""
-        return list(self._session_to_servers.get(umo, []))
+        """查询某会话（UMO 字符串）绑定的服务器列表。
+
+        无事件对象时的退化入口：只能按 UMO 自身信息匹配（隔离对话的复合
+        会话 ID 仍能按「_群号」推导），日常事件处理请用
+        `servers_for_event()`（能拿到真实群号，最准确）。
+        """
+        return self._lookup(parse_session_entry(umo), learn=False)
+
+    def servers_for_event(self, event: Any) -> list[tuple[str, ServerConfig]]:
+        """查询外部消息事件所在会话绑定的服务器列表。
+
+        匹配时顺带记忆「目标会话原始写法 → 规范 UMO 映射」，让只写了
+        `平台:群号` / `群号` 的短写目标也能在 MC → 外部方向回填发送。
+        """
+        return self._lookup(event_session_ref(event), learn=True)
+
+    def _lookup(
+        self, ref: SessionRef, *, learn: bool
+    ) -> list[tuple[str, ServerConfig]]:
+        found: list[tuple[str, ServerConfig]] = []
+        seen: set[str] = set()
+        for target in self._targets:
+            if not session_matches(target.ref, ref):
+                continue
+            # 只为「短写法 / 不完整 UMO」学习回填映射：完整 UMO 一律按
+            # 用户填写的原样发送，避免擅自改写平台自定义的会话 ID 格式
+            if learn and not target.ref.is_full and ref.canonical:
+                self._learned_sessions[target.ref.raw] = ref.canonical
+            if target.server_name in seen:
+                continue
+            seen.add(target.server_name)
+            found.append((target.server_name, target.config))
+        return found
 
     # ---- 回声抑制 ----
 
@@ -328,6 +409,95 @@ class MessageBridge:
             return False
         del self._recently_forwarded[key]
         return (time.time() - stamp) < ECHO_SUPPRESS_WINDOW
+
+    # ---- 目标会话解析 / 发送去重 ----
+
+    def resolve_send_targets(self, config: ServerConfig) -> list[tuple[str, str]]:
+        """把目标会话解析为 ``[(可直接发送的 UMO, 去重键)]``。
+
+        两种「同一会话多条配置」的重复发送都在这里收敛：
+
+        - 隔离对话下每个成员一条 UMO（``平台:GroupMessage:发送者_群号``），
+          按会话通道去重后只发一次；
+        - 完全重复的配置项（面板 / 手写重复粘贴）。
+
+        短写法（``平台:群号``、群号）依赖事件处理时学到的规范 UMO 回填；
+        仍解析不出来的会告警一次并跳过，不会静默丢消息。
+        """
+        plan: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw in config.target_sessions:
+            ref = parse_session_entry(raw)
+            send_umo = ""
+            key = ""
+            learned = self._learned_sessions.get(ref.raw)
+            if not ref.is_full and learned:
+                learned_ref = parse_session_entry(learned)
+                if learned_ref.is_full:
+                    send_umo, key = learned_ref.raw, send_target_key(learned_ref)
+            if not send_umo and ref.is_full:
+                send_umo, key = ref.raw, send_target_key(ref)
+            if not send_umo and ref.platform and ref.session_id:
+                # `平台:会话ID` 简写：默认按群聊补全（私聊建议用 /mc target add）
+                fallback = parse_session_entry(
+                    f"{ref.platform}:{GROUP_MESSAGE}:{ref.session_id}"
+                )
+                send_umo, key = fallback.raw, send_target_key(fallback)
+            if not send_umo:
+                if ref.raw not in self._unresolved_warned:
+                    self._unresolved_warned.add(ref.raw)
+                    logger.warning(
+                        f"[{PLUGIN_NAME}][{config.server_name}] 目标会话 "
+                        f"{ref.raw!r} 无法解析为可发送的 UMO（缺平台信息，且尚未"
+                        "收到过该会话的消息），已跳过。建议用 /mc target add 重新绑定"
+                    )
+                continue
+            if key in seen:
+                logger.debug(
+                    f"[{PLUGIN_NAME}][{config.server_name}] 目标会话 {ref.raw!r} "
+                    "与前面的配置指向同一会话，已合并（避免重复发送）"
+                )
+                continue
+            seen.add(key)
+            plan.append((send_umo, key))
+        return plan
+
+    def mark_outbound(self, key: str, content: str) -> None:
+        """记录一条刚发往外部会话的内容，供平台回传时识别（MC → 群 → MC）。"""
+        entries = self._recent_outbound.setdefault(key, [])
+        entries.append((str(content or ""), time.time()))
+        if len(entries) > 20:
+            del entries[:-20]
+
+    def is_outbound_echo(self, event: Any, text: str) -> bool:
+        """判断外部消息是否为插件刚发出去的内容被平台回传。
+
+        与 Robot 自身消息判定互补：部分平台（webhook / 部分协议端）不给
+        ``self_id``，只能靠内容比对兜底。命中即消费记录，避免同一内容
+        第二次被误吞。
+        """
+        content = str(text or "").strip()
+        if not content:
+            return False
+        key = send_target_key(event_session_ref(event))
+        entries = self._recent_outbound.get(key)
+        if not entries:
+            return False
+        now = time.time()
+        kept: list[tuple[str, float]] = []
+        matched = False
+        for item_content, stamp in entries:
+            if now - stamp >= OUTBOUND_ECHO_WINDOW:
+                continue
+            if not matched and item_content == content:
+                matched = True
+                continue
+            kept.append((item_content, stamp))
+        if kept:
+            self._recent_outbound[key] = kept
+        else:
+            self._recent_outbound.pop(key, None)
+        return matched
 
     # ---- MC → 外部 ----
 
@@ -443,8 +613,7 @@ class MessageBridge:
         if not self.should_forward(config, event):
             return False
 
-        targets = config.target_sessions
-        if not targets:
+        if not config.target_sessions:
             return False
 
         # 聊天消息需先经过回声抑制：外部发到 MC 的内容会原样回传为聊天事件
@@ -461,9 +630,15 @@ class MessageBridge:
         if not content and not images:
             return False
 
+        # 目标会话去重（隔离对话下同一群会写成多条 UMO），每条会话只发一次
+        targets = self.resolve_send_targets(config)
+        if not targets:
+            return False
+
         sent_count = 0
-        for umo in targets:
-            if await self._send(umo, content, images):
+        for send_umo, key in targets:
+            if await self._send(send_umo, content, images):
+                self.mark_outbound(key, content)
                 sent_count += 1
         if sent_count:
             logger.info(
@@ -579,6 +754,8 @@ class MessageBridge:
 
             chain = MessageChain(chain=[Plain(text=MARK_TEXT_OK)])
             await event.send(chain)
+            # 回执也是 Bot 自己发的消息：登记为「刚发出」，平台回传时不再转发进 MC
+            self.mark_outbound(send_target_key(event_session_ref(event)), MARK_TEXT_OK)
             return True
         except Exception as exc:
             logger.debug(f"[{PLUGIN_NAME}] 转发回执发送失败: {exc}")

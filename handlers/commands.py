@@ -150,19 +150,25 @@ class CommandHandler:
 
     # ---- 目标服务器选择 ----
 
-    def _bound_servers(self, umo: str) -> list[ServerInstance]:
-        """返回与该会话绑定的、且已配置启用的服务器实例。"""
+    def _bound_servers(self, event: AstrMessageEvent) -> list[ServerInstance]:
+        """返回与事件所在会话绑定的、且已配置启用的服务器实例。"""
         result: list[ServerInstance] = []
-        for server_name, _ in self.bridge_lookup(umo):
+        for server_name, _ in self.bridge_lookup(event):
             instance = self.server_manager.get(server_name)
             if instance is not None:
                 result.append(instance)
         return result
 
-    def bridge_lookup(self, umo: str) -> list[tuple[str, ServerConfig]]:
-        """由 main 注入的行车桥查询；未注入时回退为全部服务器。"""
+    def bridge_lookup(
+        self, event: AstrMessageEvent
+    ) -> list[tuple[str, ServerConfig]]:
+        """由 main 注入的消息桥查询；未注入时回退为全部服务器。
+
+        传事件而不是 UMO 字符串：隔离对话（unique_session）下同一群每个
+        成员的 UMO 都不同，必须靠事件里的真实群号做匹配。
+        """
         if self._bridge is not None:
-            return self._bridge.servers_for_session(umo)
+            return self._bridge.servers_for_event(event)
         return [
             (instance.server_name, instance.config)
             for instance in self.server_manager.all()
@@ -189,12 +195,11 @@ class CommandHandler:
         返回 (实例, 提示文本)：实例为 None 时，提示文本需回给用户。
         多台服务器时提示用户在指令前加数字编号选择目标。
         """
-        umo = event.unified_msg_origin
         all_servers = self.server_manager.all()
         if not all_servers:
             return None, "❌ 尚未配置任何 MC 服务器，请先在插件配置中添加"
 
-        bound = self._bound_servers(umo)
+        bound = self._bound_servers(event)
         if len(bound) == 1:
             return bound[0], None
         if len(bound) > 1:
@@ -272,6 +277,9 @@ class CommandHandler:
             "mc bind <游戏ID> — 绑定你的游戏ID",
             "mc unbind — 解除绑定",
             "mc servers — 查看服务器与连接状态",
+            "mc target — 查看 / 绑定本会话的目标服务器",
+            "mc target add [编号] — 把当前会话加入目标会话（免手写 UMO）",
+            "mc target remove [编号] — 移除当前会话",
             "",
             "多台服务器时在指令前加数字编号选择目标（mc servers 可查看编号）；仅一台时可直接省略",
             "地址形式可直连任意服务器查询（不经鹊桥，SLP 协议）：如 mc status 127.0.0.1:25565、mc list play.example.com",

@@ -74,6 +74,17 @@ API_TIMEOUT = 10
 # 外部消息转发到 MC 后，该内容在此窗口内再次出现（回声）时不再回传外部
 ECHO_SUPPRESS_WINDOW = 5.0
 
+# 同一条外部消息事件被平台重复投递 / 重复触发时，只处理一次的时间窗口
+MESSAGE_DEDUPE_WINDOW = 3.0
+
+# MC → 外部转发成功后，平台把 Bot 自身消息回传（回声）的识别窗口。
+# 与 ECHO_SUPPRESS_WINDOW 方向相反：那个抑制「群 → MC → 群」，
+# 这个抑制「MC → 群 → MC」，避免同一条消息在 MC 里出现两遍。
+OUTBOUND_ECHO_WINDOW = 5.0
+
+# 单台服务器允许绑定的目标会话上限（防止 /mc target add 无限膨胀配置）
+MAX_TARGET_SESSIONS = 20
+
 DEFAULT_CHAT_FORMAT = "[{display_name}]{player}: {message}"
 DEFAULT_BROADCAST_FORMAT = "[{platform}]{sender}: {message}"
 

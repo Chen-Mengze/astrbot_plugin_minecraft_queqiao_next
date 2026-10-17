@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft 鹊桥互通</h1>
 <p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.5-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.6-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
@@ -11,6 +11,7 @@
 通过 [鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao) 模组连接 Minecraft 服务器与 AstrBot，实现群服消息互通与服务器管理。
 
 - **群服互通**：游戏内聊天与群消息双向转发；回复 Bot 转发的游戏消息时，转发进游戏的内容自动附 `@原玩家名`，游戏内一目了然是谁在群里回复
+- **免手写 UMO**：在目标群/私聊里发 `mc target add` 即可绑定当前会话；兼容 AstrBot「隔离对话」的复合会话 ID，按群号归一匹配，同一群配一条即可让所有成员的消息都转发进游戏，且不会重复发送
 - **图片互通**：群消息图片转发进游戏（需玩家安装 [ChatImage](https://github.com/kitUIN/ChatImage) 模组渲染）；游戏内图片 / 链接自动下载后发回群
 - **事件播报**：玩家进出 / 死亡 / 成就事件转发到指定会话（死亡与成就原版端与 Velocity 不支持）
 - **服务器管理**：状态查询、在线玩家列表、远程指令执行
@@ -34,8 +35,13 @@
 | `/mc bind <游戏ID>` | 全部 | 绑定你的游戏ID |
 | `/mc unbind` | 全部 | 解除绑定 |
 | `/mc servers` | 全部 | 查看已配置服务器与连接状态 |
+| `/mc target` | 管理员 | 查看各服务器的目标会话与当前会话标识 |
+| `/mc target add [编号]` | 管理员 | 把**当前会话**加入目标会话（自动写成规范 UMO，免手写） |
+| `/mc target remove [编号]` | 管理员 | 从目标会话移除当前会话 |
 
 多台服务器时在指令前加数字编号选择目标（如 `mc cmd 1 time set day` 定向第 1 台），仅一台服务器时可省略；`mc servers` 可查看各服务器编号。
+
+> 不想抄 `/sid` 的长串 UMO 时，直接在目标群/私聊里发 `mc target add` 即可完成绑定（需要管理员权限）；绑定值会自动收敛为 `平台:GroupMessage:群号`，群内所有成员的消息都能转发。
 
 `mc status` / `mc list` 支持**地址直连**：把参数换成 `host:port`（如 `mc status 127.0.0.1:25565`），插件直接以 Minecraft SLP 协议查询**任意**服务器（版本、在线人数、延迟、MOTD、玩家名），无需配置鹊桥；省略端口默认 `25565`。
 
@@ -85,7 +91,7 @@
 仪表盘在「服务器实例状态」与「性能监控」下方还有一个可折叠的「⚙ 功能设置」面板，把**不属于监控**的开关集中在这里（折叠状态由后端记住，换设备/刷新后保持；在「全部服务器」视图下自动隐藏）：
 
 - **AI 对话**（每台服务器独立）：启用 / 停用游戏内 AI 对话，以及触发前缀。前缀命中时该条聊天只走 AI、回复私聊给玩家，不再转发到群；留空 = 不触发 AI，普通聊天不受影响。保存后写入插件配置并即时生效（不重建连接），与 WebUI 里的 `enable_ai_chat` / `ai_chat_prefix` 是同一份配置
-- **消息转发**（每台服务器独立）：聊天 / 进出 / 死亡 / 成就转发开关、聊天消息格式（`{player}` `{message}` `{display_name}` 占位符）、群 → MC 触发前缀（留空 = 全部转发）与目标会话（每行一个 UMO）。与「消息转发配置」配置表是同一份配置，保存后即时生效（不重建连接）
+- **消息转发**（每台服务器独立）：聊天 / 进出 / 死亡 / 成就转发开关、聊天消息格式（`{player}` `{message}` `{display_name}` 占位符）、群 → MC 触发前缀（留空 = 全部转发）与目标会话（每行一个 UMO；也可在目标群里发 `mc target add` 自动绑定）。与「消息转发配置」配置表是同一份配置，保存后即时生效（不重建连接，目标会话改动会立即重建匹配索引）
 - **互通终端**（每台服务器独立）：终端日志加载天数（0～30，默认 2 = 今天 + 昨天，0 = 全部保留分片）。保存在插件配置条目顶层（与 WebUI 里的 `terminal_days` 是同一份配置），保存后即时生效（不重建连接）
 - 性能监控自身参数（启用、采集间隔、实时采集频率、数据保留、TPS 指令、延迟探测、默认展示）仍在监控面板右上角「⚙ 设置」弹窗里维护
 
@@ -100,7 +106,7 @@
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `target_sessions` | list | 空 | **目标会话**（必填）：MC 消息转发的会话 UMO 列表，决定 MC 与群的绑定关系，不填则群里收不到消息 |
+| `target_sessions` | list | 空 | **目标会话**（必填）：会话 UMO 列表，决定 MC ↔ 群的绑定关系，不填则群里收不到消息。推荐用 `mc target add` 自动绑定；手填时兼容 `/sid` 的完整 UMO |
 | `server_name` | string | `Server` | **服务器名称**（唯一标识），必须与鹊桥 `config.yml` 的 `server_name` 一致；多台服务器时互不相同 |
 | `display_name` | string | 空 | 服务器显示名称（可中文，如 `生存服`），仅影响展示；留空用 `display_name_default` |
 | `display_name_default` | string | `MC` | 显示名称默认值：`display_name` 留空时 `{display_name}` 与状态查询显示的内容 |
@@ -136,7 +142,9 @@
 | `chatimage_name` | string | `图片` | 图片在游戏聊天栏的显示名称 |
 | `forward_image_from_mc` | bool | `false` | 游戏内图片（CICode / 链接）自动下载后作为图片发回群 |
 
-> 目标会话可用 AstrBot 自带的 `/sid` 指令获取：在目标群聊/私聊发送 `/sid`，回复中的 `UMO` 就是要填的值（如 `aiocqhttp:GroupMessage:123456789`）。该列表同时决定：MC 消息转发到哪些会话、哪些会话的消息转发进 MC、以及该会话的 `mc` 指令归属哪台服务器。
+> **目标会话怎么填**：推荐在目标群/私聊里发 `mc target add`（管理员），插件会把当前会话自动写进配置；也可以发 AstrBot 的 `/sid` 拿到 `UMO` 后手填（如 `aiocqhttp:GroupMessage:123456789`）。该列表同时决定：MC 消息转发到哪些会话、哪些会话的消息转发进 MC、以及该会话的 `mc` 指令归属哪台服务器。
+>
+> **隔离对话（unique_session）**：AstrBot 开启「隔离对话」后，群消息的 UMO 会变成 `平台:GroupMessage:发送者ID_群号`（如 `aiocqhttp:GroupMessage:1507157577_297223059`），同一群每个成员都不同。插件会统一按**群号**归一匹配与去重：配一条即可覆盖全群所有成员，同群多条 UMO 也不会让 MC 消息重复刷屏。
 
 > `mark_option: emoji` 会给触发转发的**原消息贴表情**（不额外发消息），所有 aiocqhttp 协议端（NapCat、Lagrange、LLOneBot 等）都支持，其他平台静默跳过。
 
@@ -325,10 +333,10 @@ TPS 与延迟监控**默认开启、无需配置**：后台定期采集并持久
 | 启用开关 | `on` | 关闭后停止采样 |
 | 采集间隔 | `60` 秒 | 最小 `10` 秒 |
 | 保留天数 | `7` 天 | 超期自动清理 |
-| TPS 指令 | `auto` | 自动按服务端品牌选择（Forge → `forge tps`；Fabric/Quilt → `spark tps`；Bukkit 系 → `tps`），也可手动指定 |
+| TPS 指令 | `auto` | 自动按服务端品牌选择（NeoForge → `neoforge tps`；Forge → `forge tps`；Fabric/Quilt → `spark tps`；Bukkit 系 → `tps`），也可手动指定 |
 | 延迟探测域名 | 留空 | 直连服务器的公网地址（可含端口，如 `mc.example.com:25565`），用于测玩家视角延迟；留空不采集延迟 |
 
-- **TPS**：经 RCON 执行 TPS 指令解析，需服务端支持对应指令（原版端不支持，显示为不可用）
+- **TPS**：经 RCON 执行 TPS 指令解析，需服务端支持对应指令（原版端不支持，显示为不可用）。解析兼容 Paper/Spigot 的 `tps`、spark（含 ⚡/颜色装饰、标题行缺失）、Forge/NeoForge 的 `forge tps` / `neoforge tps` 输出，并会跳过 CPU 占用等相似段避免误采
 - **延迟**：直连服务器做 Minecraft SLP ping（不经鹊桥中转、无需 RCON），须在设置中填写公网探测地址；服务器关闭 SLP 或地址不可达时延迟显示不可用
 - 采样按天分片存储于 `data_dir/monitor/`，重启不丢；`/mc status` 会附带最近采样值
 
@@ -337,7 +345,7 @@ TPS 与延迟监控**默认开启、无需配置**：后台定期采集并持久
 ### 安装
 
 1. 将本插件放入 AstrBot 的 `data/plugins/` 目录，重启 AstrBot
-2. 在 WebUI 插件配置中点击「添加 MC服务器」，填写**目标会话**（必填）
+2. 在 WebUI 插件配置中点击「添加 MC服务器」，填写**目标会话**（必填）；也可以在重启后到目标群/私聊里发 `mc target add` 自动绑定
 3. 确保 `server_name` 与鹊桥 `config.yml` 的 `server_name` 完全一致
 
 > AstrBot 与 MC 装在同一台机器时，默认连接信息已与鹊桥默认端口对齐，通常无需改动，填好「目标会话」即可使用。
@@ -432,6 +440,14 @@ subscribe_event:             # 按需开启事件订阅
 **Q：租赁服无法开放端口？**
 
 将 `ws_mode` 设为 `reverse`：插件监听端口等待鹊桥连入，并在鹊桥 `websocket_client.url_list` 填入插件地址。
+
+**Q：同一群的消息有的成员能转发进游戏、有的不行？或者群里收到两遍 MC 消息？**
+
+大概率是 AstrBot 开启了「隔离对话」（`platform_settings.unique_session`）：群消息 UMO 会带发送者前缀（`平台:GroupMessage:发送者ID_群号`），按整串匹配时只能命中一个人；为「谁都能发」把每个成员的 UMO 都配一遍，又会让 MC 消息按条数重复发送。现在插件按**群号**归一匹配与去重：配置里保留一条该群的 UMO 即可（推荐用 `mc target add` 重新绑定一次，插件会自动收敛成 `平台:GroupMessage:群号`）。
+
+**Q：Bot 自己发的消息为什么会出现在游戏里 / 触发回环？**
+
+AstrBot 的 `platform_settings.ignore_bot_self_message` 默认关闭，部分平台会把 Bot 账号（含其它客户端）发出的消息下发为事件。插件已内置防护：`self_id == sender_id` 的自消息、按 `message_id` 的重复投递、以及 MC → 群刚发出又被平台回传的内容都会被拦截，无需改 AstrBot 配置。
 
 **Q：游戏内聊天想既能和 AI 说话、又能同步到群？**
 

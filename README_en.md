@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft Queqiao</h1>
 <p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.5-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.6-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
@@ -11,6 +11,7 @@
 Connects Minecraft servers to AstrBot through the [QueQiao](https://github.com/17TheWord/QueQiao) mod, bridging group chat with in-game chat and providing server management.
 
 - **Chat bridge**: two-way forwarding between in-game chat and group messages; replying to a game message forwarded by the bot automatically prepends `@原玩家名` (the original player name) in-game, so everyone sees who replied
+- **No hand-written UMOs**: run `mc target add` in the target group/DM to bind that session; AstrBot's “unique session” composite session IDs are supported — matching is normalized to the group ID, so one entry covers every member of the group and a chat message is never posted twice
 - **Image forwarding**: group images relayed into the game (players need the [ChatImage](https://github.com/kitUIN/ChatImage) mod installed to render them); in-game images / links are downloaded and sent back to the group
 - **Event broadcast**: player join / quit / death / achievement events forwarded to sessions (death & achievements unsupported on Vanilla/Velocity)
 - **Server management**: status queries, online player list, remote command execution
@@ -34,8 +35,13 @@ Connects Minecraft servers to AstrBot through the [QueQiao](https://github.com/1
 | `/mc bind <game_id>` | Everyone | Bind your game ID |
 | `/mc unbind` | Everyone | Remove the binding |
 | `/mc servers` | Everyone | List configured servers and connection state |
+| `/mc target` | Admin | Show each server's target sessions and the current session ID |
+| `/mc target add [number]` | Admin | Add **the current session** to the target sessions (stored as a canonical UMO) |
+| `/mc target remove [number]` | Admin | Remove the current session from the target sessions |
 
 When several servers are configured, prefix the command with a number to pick the target (e.g. `mc cmd 1 time set day` targets the first server); with one server it can be omitted. Run `mc servers` to see each server's number.
+
+> To avoid copying the long UMO from `/sid`, just send `mc target add` in the target group/DM (admin required); the value is stored as `platform:GroupMessage:group_id` so every member's messages can be relayed.
 
 `mc status` / `mc list` also support **direct address query**: pass a `host:port` instead (e.g. `mc status 127.0.0.1:25565`) and the plugin queries **any** server directly over the Minecraft SLP protocol (version, online count, latency, MOTD, player names) with no QueQiao or config needed. When the port is omitted it defaults to `25565`.
 
@@ -81,7 +87,7 @@ Every save is **partial-effect** (only the image-transfer subsystem is rebuilt; 
 Below the server cards and the performance-monitoring panel, the dashboard has a collapsible “⚙ 功能设置” (feature settings) panel that groups everything **not** monitoring-related; its collapsed state is remembered by the backend (and the panel is hidden in the “全部服务器” all-servers view):
 
 - **AI chat** (per server): turn in-game AI chat on / off and set its trigger prefix. A chat message starting with the prefix goes to the AI only — the reply is sent to that player as a private message and the message is not forwarded to the group; an empty prefix disables AI triggering and leaves normal chat untouched. Saving writes the plugin config and takes effect immediately without rebuilding connections, so it is the same setting as `enable_ai_chat` / `ai_chat_prefix` in the WebUI
-- **Message forwarding** (per server): toggles for chat / join-leave / death / achievement forwarding, the chat message format (`{player}` `{message}` `{display_name}` placeholders), the group→MC trigger prefix (empty = forward everything) and the target sessions (one UMO per line). These are the same settings as in the “Message-forwarding configuration” table; saving takes effect immediately without rebuilding connections
+- **Message forwarding** (per server): toggles for chat / join-leave / death / achievement forwarding, the chat message format (`{player}` `{message}` `{display_name}` placeholders), the group→MC trigger prefix (empty = forward everything) and the target sessions (one UMO per line; `mc target add` in the target group also works). These are the same settings as in the “Message-forwarding configuration” table; saving takes effect immediately without rebuilding connections (target-session changes rebuild the match index right away)
 - **Terminal window** (per server): how many days of interop-terminal logs to load (0–30, default 2 = today plus yesterday, 0 = keep all shards). Stored at the top level of the config entry — the same setting as `terminal_days` in the WebUI; saving takes effect immediately without rebuilding connections
 - Monitoring parameters themselves (enabled, sample interval, realtime rate, retention, TPS command, latency probe, default view) still live in the “⚙ 设置” dialog of the monitoring panel
 
@@ -96,7 +102,7 @@ The “⚙ 设置” button at the top right (next to the auto-refresh toggle) o
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `target_sessions` | list | empty | **Target sessions** (required): session UMO list for MC messages; defines the MC ↔ chat binding — when empty the group receives nothing |
+| `target_sessions` | list | empty | **Target sessions** (required): session UMO list defining the MC ↔ chat binding — when empty the group receives nothing. `mc target add` is the recommended way to fill it; full `/sid` UMOs are also accepted |
 | `server_name` | string | `Server` | **Server name** (unique identifier), must match QueQiao's `server_name`; must differ across servers |
 | `display_name` | string | empty | Display name (may be Chinese, e.g. `生存服`), display only; falls back to `display_name_default` when blank |
 | `display_name_default` | string | `MC` | Display-name default: what `{display_name}` and status output show when `display_name` is blank |
@@ -132,7 +138,9 @@ The “⚙ 设置” button at the top right (next to the auto-refresh toggle) o
 | `chatimage_name` | string | `图片` | In-game display name for the image |
 | `forward_image_from_mc` | bool | `false` | In-game images (CICode / links) downloaded and sent back as images |
 
-> Get a session's UMO with **AstrBot's built-in `/sid` command**: send `/sid` in the target group/DM, and the `UMO` field in the reply is the value to fill in (e.g. `aiocqhttp:GroupMessage:123456789`). This list drives three things at once: which sessions receive MC messages, which sessions' messages are relayed into MC, and which server the `mc` commands issued in that session belong to.
+> **Filling in target sessions**: the recommended way is to send `mc target add` (admin) in the target group/DM — the plugin writes the current session into the config for you. Alternatively get the UMO with **AstrBot's built-in `/sid` command** (e.g. `aiocqhttp:GroupMessage:123456789`). This list drives three things at once: which sessions receive MC messages, which sessions' messages are relayed into MC, and which server the `mc` commands issued in that session belong to.
+>
+> **Unique session (`unique_session`)**: with AstrBot's “unique session” enabled, a group message's UMO becomes `platform:GroupMessage:sender_id_group_id` (e.g. `aiocqhttp:GroupMessage:1507157577_297223059`) — different for every member. The plugin normalizes matching and de-duplication by **group ID**: one entry covers the whole group, and multiple UMOs pointing at the same group will not post an MC message twice.
 
 > `mark_option: emoji` adds a reaction to the **original message** that triggered the relay (no extra message is sent); every aiocqhttp protocol implementation (NapCat, Lagrange, LLOneBot, etc.) supports it, other platforms are skipped silently.
 
@@ -321,10 +329,10 @@ TPS and latency monitoring are **enabled by default, zero-config**: a background
 | Enable switch | `on` | Stops sampling when off |
 | Sample interval | `60` s | Minimum `10` s |
 | Retention | `7` days | Older samples pruned automatically |
-| TPS command | `auto` | Auto-picks by server brand (Forge → `forge tps`; Fabric/Quilt → `spark tps`; Bukkit forks → `tps`); may be pinned manually |
+| TPS command | `auto` | Auto-picks by server brand (NeoForge → `neoforge tps`; Forge → `forge tps`; Fabric/Quilt → `spark tps`; Bukkit forks → `tps`); may be pinned manually |
 | Latency domain | empty | Public address of the MC server (may include a port, e.g. `mc.example.com:25565`) for player-perspective latency; empty disables latency probing |
 
-- **TPS**: parsed from a TPS command executed over RCON — the server must support the command (Vanilla reports it as unavailable)
+- **TPS**: parsed from a TPS command executed over RCON — the server must support the command (Vanilla reports it as unavailable). Parsing covers Paper/Spigot `tps`, spark (with ⚡/color decorations and a missing header line) and Forge/NeoForge `forge tps` / `neoforge tps` output, skipping look‑alike sections such as CPU usage
 - **Latency**: direct-connect Minecraft SLP ping (no QueQiao relay, no RCON) — a public probe address must be filled in Settings; servers with SLP disabled or unreachable addresses report latency as unavailable
 - Samples are stored per-day under `data_dir/monitor/` and survive restarts; `/mc status` also shows the latest samples
 
@@ -333,7 +341,7 @@ TPS and latency monitoring are **enabled by default, zero-config**: a background
 ### Installation
 
 1. Place this plugin under AstrBot's `data/plugins/` directory and restart AstrBot
-2. In the WebUI plugin config, click "Add MC server" and **fill in "Target sessions" (required)**
+2. In the WebUI plugin config, click "Add MC server" and **fill in "Target sessions" (required)** — or, after restarting, send `mc target add` in the target group/DM to bind it automatically
 3. Make sure `server_name` exactly matches QueQiao's `server_name`
 
 > When AstrBot and MC run on one machine, the default connection settings already line up with QueQiao's default port — nothing needs changing, just set "Target sessions".
@@ -414,6 +422,14 @@ subscribe_event:             # enable the events you need
 **Q: Achievement messages only show "🏆 达成成就"?** Achievement text varies by QueQiao version and server type; the plugin falls back through `translation.text → text → display.title → key`. For localized names, enable translation on the QueQiao side (`enable_translation: true` + `translate/zh_cn.json`) — it is not a plugin setting.
 
 **Q: My rented server cannot open a port.** Set `ws_mode` to `reverse`: the plugin listens and waits for QueQiao to connect; point QueQiao's `websocket_client.url_list` at the plugin.
+
+**Q: Some group members' messages are not relayed into the game, or the group receives each MC message twice?**
+
+Most likely AstrBot's “unique session” (`platform_settings.unique_session`) is enabled: group UMOs then carry a sender prefix (`platform:GroupMessage:sender_id_group_id`), so exact UMO matching only hits one member; adding one UMO per member then makes MC messages be sent once per entry. The plugin now normalizes matching and de-duplication by **group ID**: keep a single entry for the group (re-running `mc target add` stores the canonical `platform:GroupMessage:group_id` form).
+
+**Q: Why do the bot's own messages show up in-game / cause a loop?**
+
+AstrBot's `platform_settings.ignore_bot_self_message` is off by default and some platforms deliver the bot account's own messages (including from other clients) as message events. The plugin guards against this: self messages (`self_id == sender_id`), duplicate deliveries (by `message_id`) and MC → group content echoed back by the platform are all filtered — no AstrBot config change needed.
 
 **Q: How do I let in-game chat both reach the AI and sync to the group?** Set both prefixes, e.g. `*` for bridging and `ai` for the AI. Take care not to let one prefix contain the other.
 

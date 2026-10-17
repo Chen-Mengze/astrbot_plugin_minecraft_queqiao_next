@@ -56,15 +56,43 @@ from .slp_ping import brand_from_slp, mc_ping
 if TYPE_CHECKING:
     from ..core.server_manager import ServerManager
 
-# TPS 标准输出：`TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0`
-# Paper/Spigot/spark 均含该行；前缀可能带颜色代码或其它装饰
-_TPS_RE = re.compile(
-    r"TPS from last 1m, 5m, 15m:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)",
+# ---- TPS 输出解析：一套正则覆盖 Paper / spark / Forge / NeoForge ----
+# 设计前提（踩过的坑）：
+# 1. 不能硬编码档位串。Paper 是 `1m, 5m, 15m`，spark 是 `5s, 10s, 1m, 5m, 15m`
+#    （旧版还可能只有 3 档），写死 1m/5m/15m 会让 spark 全部失配。
+# 2. 必须剥离装饰。spark 值行形如 ` *20.0, *20.0, ...`（* 为高亮标记），
+#    日志经 RCON 回传还会带 `[⚡] ` 或 `[12:00:00] [Server thread/INFO] ` 前缀，
+#    直接 `[\d.]+` 匹配会被这些前缀顶掉。
+# 3. 不能靠 "行内三个逗号分隔数字" 兜底——spark 的 `CPU usage ...: 2%, 1%, 2%`
+#    长得一模一样，会静默把 CPU 占用采成 TPS，比解析失败更危险。
+
+# 装饰清理：§x / &x 颜色码、ANSI 转义、spark 高亮星号
+_DECOR_RE = re.compile(r"(?:§|&)[0-9A-Fa-fK-Zk-z]|\x1b\[[0-9;]*[A-Za-z]")
+_STAR_RE = re.compile(r"(?<![0-9.])\*(?=[0-9])")
+# 行首装饰块：spark 的 `[⚡] `、日志的 `[12:00:00] [Server thread/INFO] `
+_PREFIX_RE = re.compile(r"^(?:\[[^\]]*\]\s*)+")
+# 旧版裸值行的 `TPS:` 标签（兼容 `TPS: 20.0, 19.0, 18.0`）
+_TPS_LABEL_RE = re.compile(r"^TPS\s*:\s*", re.IGNORECASE)
+
+# spark / Paper：`TPS from last <档位列表>:` 标题行 + 紧随（或下一行）的值行
+_TPS_BLOCK_RE = re.compile(
+    r"TPS\s+from\s+last\s*([^:\n]*)\s*:\s*\n?\s*([^\n]*)", re.IGNORECASE
+)
+# 值行：逗号分隔的 >=3 个纯数字，允许 spark 的 * / 颜色码前缀
+_VAL_LINE_RE = re.compile(
+    r"^\s*(?:[*§&][0-9A-Fa-fK-Zk-z]\s*|\*\s*)*[\d.]+\s*"
+    r"(?:,\s*(?:[*§&][0-9A-Fa-fK-Zk-z]\s*|\*\s*)*[\d.]+\s*){2,}$"
+)
+# Forge / NeoForge 汇总行：`Overall: Mean tick time: 2.233 ms. Mean TPS: 20.000`
+_FORGE_OVERALL_RE = re.compile(
+    r"Overall\s*:\s*Mean tick time:\s*([\d.]+)\s*ms\.?\s*Mean TPS:\s*([\d.]+)",
     re.IGNORECASE,
 )
-# 兜底：无前缀的旧版输出（行内恰好三个逗号分隔的浮点数），但必须处于
-# TPS 语境，避免把玩家名/其它数字行误判为 TPS
-_TPS_BARE_RE = re.compile(r"([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)")
+# Forge / NeoForge 维度行（1.18+ 维度名是命名空间，不再是数字 ID；
+# 旧版还有 `ms.Mean TPS:` 无空格写法，故 ms 后的点号可选）
+_FORGE_DIM_RE = re.compile(
+    r"Mean tick time:\s*[\d.]+\s*ms\.?\s*Mean TPS:\s*([\d.]+)", re.IGNORECASE
+)
 # server_name 转安全文件名：仅保留字母数字、_、-、.，其余替换为 _
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
@@ -76,25 +104,113 @@ METRIC_LATENCY = "latency"
 MONITOR_METRICS = (METRIC_TPS, METRIC_TPS_5M, METRIC_TPS_15M, METRIC_LATENCY)
 
 
+def _clean_tps_text(text: str) -> str:
+    """剥离颜色码 / ANSI / spark 高亮星号，得到可直接正则匹配的纯文本。"""
+    return _STAR_RE.sub("", _DECOR_RE.sub("", text))
+
+
+def _strip_line_prefix(line: str) -> str:
+    """去掉行首的 `[⚡] ` 或 `[时间] [线程/INFO] ` 等日志装饰块。"""
+    return _PREFIX_RE.sub("", line).strip()
+
+
+def _parse_spark_like(text: str) -> tuple[float, float, float] | None:
+    """解析 spark / Paper 的 `TPS from last ...` 输出。
+
+    两条路径：
+    - 命中标题行：按标题里的档位名（1m/5m/15m）精确取值，档位顺序变了也不怕；
+      标题与值分行打印时（spark 常见）也能取到下一行的值。
+    - 标题行缺失（RCON 只回传了值行，QueQiao 场景实测会丢）：退化为值行扫描，
+      跳过 CPU usage / Tick durations 行，避免把 `2%, 1%, 2%` 当成 TPS。
+    """
+    block = _TPS_BLOCK_RE.search(text)
+    nums: list[float] | None = None
+    units: list[str] = []
+    if block:
+        units = [u.strip().lower() for u in block.group(1).split(",")]
+        cand = [float(x) for x in re.findall(r"[\d.]+", _clean_tps_text(block.group(2)))]
+        if cand:
+            nums = cand
+    if nums is None:
+        for raw in _clean_tps_text(text).splitlines():
+            line = _strip_line_prefix(raw)
+            low = line.lower()
+            # 排除与 TPS 长得像的其它段：CPU 占用、tick 耗时分布
+            if "usage" in low or "duration" in low or "cpu" in low:
+                continue
+            # 兼容带 `TPS:` 前缀的旧版裸值行（如 `TPS: 20.0, 19.0, 18.0`）
+            candidate = _TPS_LABEL_RE.sub("", line).strip()
+            if _VAL_LINE_RE.match(candidate):
+                nums = [float(x) for x in re.findall(r"[\d.]+", candidate)]
+                break
+    if not nums:
+        return None
+
+    if units and len(nums) == len(units):
+        # 档位名已知：按名取值，缺失的档位用最后一档兜底
+        picked = [
+            next((nums[i] for i, u in enumerate(units) if u == want), None)
+            for want in ("1m", "5m", "15m")
+        ]
+        fallback = nums[-1]
+        return tuple(p if p is not None else fallback for p in picked)
+    if len(nums) >= 5:
+        # spark 新版：5s, 10s, 1m, 5m, 15m → 取后三档
+        return (nums[2], nums[3], nums[4])
+    if len(nums) == 3:
+        return (nums[0], nums[1], nums[2])
+    return None
+
+
+def _parse_forge_like(text: str) -> tuple[float, float, float] | None:
+    """解析 Forge / NeoForge 的 `forge tps` / `neoforge tps` 输出。
+
+    Forge 只有单一均值（无 1m/5m/15m 分档），三档填同一值。
+    优先取 `Overall` 汇总行；若 RCON 回传被截断没有 Overall，
+    退化为「所有维度里最差的那个 TPS」（保守取值，宁低勿高）。
+    """
+    matched = _FORGE_OVERALL_RE.search(text)
+    if matched:
+        value = float(matched.group(2))
+        return (value, value, value)
+    dims = [float(x) for x in _FORGE_DIM_RE.findall(text)]
+    if dims:
+        value = min(dims)
+        return (value, value, value)
+    return None
+
+
 def parse_tps(output: str | None) -> tuple[float, float, float] | None:
     """解析服务端 tps 指令输出为 ``(1m, 5m, 15m)``；无法解析返回 None。
 
     兼容格式：
     - Paper/Spigot：``TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0``
-    - spark：前缀带装饰（如 ``⏱  TPS from last...``），同一正则命中
-    - 旧版裸三数（前提是行内含 "TPS" 字样，避免误伤其它输出）
+    - spark：``TPS from last 5s, 10s, 1m, 5m, 15m:`` + `` *20.0, *20.0, ...``
+      （带 ⚡/§ 装饰，且标题行可能缺失）
+    - Forge/NeoForge：``Overall: Mean tick time: 2.233 ms. Mean TPS: 20.000``
+      （1.18+ 维度名为命名空间，无 Overall 时取最差维度）
     - 原版端 ``Unknown command`` / 指令被拒 → None
     """
     if not output:
         return None
-    text = output.strip()
-    matched = _TPS_RE.search(text)
-    if matched:
-        return tuple(float(group) for group in matched.groups())
-    if "TPS" in text.upper():
-        bare = _TPS_BARE_RE.search(text)
-        if bare:
-            return tuple(float(group) for group in bare.groups())
+    text = _clean_tps_text(output.strip())
+    # spark / Paper：命中标题行、tick durations 段或 ⚡ 标记即按 spark 口径解析
+    if (
+        re.search(r"TPS\s+from\s+last", text, re.IGNORECASE)
+        or "tick durations" in text.lower()
+        or "⚡" in text
+    ):
+        parsed = _parse_spark_like(text)
+        if parsed:
+            return parsed
+    # Forge / NeoForge
+    parsed = _parse_forge_like(text)
+    if parsed:
+        return parsed
+    # 最后再试一次 spark 口径（无 ⚡、无标题行的裸值行输出）。
+    # 必须仍在 TPS 语境里，避免把 RCON 返回的其它「三连数字」当成 TPS
+    if "tps" in text.lower():
+        return _parse_spark_like(text)
     return None
 
 
@@ -121,12 +237,18 @@ def resolve_tps_command(server_type: str | None, preference: str) -> str:
     - Paper/Spigot/Bukkit 等布克特系 → ``tps``
     - 未知/无缓存 → ``tps``（默认尝试，解析失败时状态行会提示）
     显式填写具体指令时固定使用，不受服务端类型影响。
+
+    NeoForge（1.20.2+）已把内置指令改名为 ``neoforge tps``，必须先于
+    "forge" 子串判断——否则 ``neoforge`` 会被 ``"forge" in brand`` 命中，
+    发出服务端不存在的 ``forge tps``。
     """
     pref = (preference or "").strip()
     if pref and pref.lower() != "auto":
         return pref
     if server_type:
         brand = server_type.lower()
+        if "neoforge" in brand:
+            return "neoforge tps"
         if "forge" in brand:
             return "forge tps"
         if "fabric" in brand or "quilt" in brand:
@@ -870,6 +992,12 @@ class MonitorCollector:
             )
         parsed = parse_tps(output)
         if parsed is None:
+            # 打全量原始输出：只截 60 字符时看不出 RCON 到底回传了什么，
+            # 排查解析失败必须看到完整文本
+            logger.warning(
+                f"[{PLUGIN_NAME}] TPS 输出无法解析，指令={tps_command!r}，"
+                f"原始输出:\n{output}"
+            )
             return None, f"TPS 输出无法解析: {output[:60]!r}"
         return parsed, None
 

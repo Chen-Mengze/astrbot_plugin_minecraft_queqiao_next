@@ -41,6 +41,7 @@ astrbot_plugin_minecraft_queqiao/
 ├── core/                   # 核心层：配置模型 + 协议模型 + 连接管理
 │   ├── constants.py        #   常量（协议标识/默认值/重连参数）—— 零内部依赖
 │   ├── models.py           #   鹊桥事件与实体模型（防御式 from_dict）
+│   ├── session_router.py   #   会话 UMO 解析/匹配/去重（隔离对话兼容）
 │   ├── models_config.py    #   ServerConfig（对齐 _conf_schema.json）
 │   ├── queqiao_client.py   #   WS 客户端：正/反向、握手、echo 关联、重连
 │   ├── rcon_client.py      #   直连 RCON 兜底（惰性 import aiomcrcon）
@@ -220,12 +221,38 @@ SecurityError**，不是返回空——任何「try/catch 包一下就能用」�
   类型/长度校验与钳制），再在前端异步写 + 异步恢复；不要在 iframe 里依赖
   任何本地存储
 
-### 4.8 自检
+### 4.8 目标会话匹配与转发去重（改 on_message / MessageBridge 前必读）
+
+`target_sessions` 的匹配**不得再按整串 UMO 精确比较**，统一走
+`core/session_router.py`（`parse_session_entry` / `event_session_ref` /
+`session_matches` / `send_target_key`）：
+
+- AstrBot 开启「隔离对话」（`platform_settings.unique_session`）后，群消息 UMO
+  会被改写成 `平台:GroupMessage:发送者ID_群ID`，**同一群每个成员的 UMO 都不同**。
+  事件侧真实群号取 `event.get_group_id()`；配置侧复合 ID 只在
+  `纯数字_纯数字` 形态下才拆群号（避免把 Lark `oc_xxx` 这类真实会话 ID 拆坏）。
+- 匹配入口是 `MessageBridge.servers_for_event(event)`（带事件）；无事件对象的
+  场景（测试 / 外部调用）才用 `servers_for_session(umo)` 退化接口。
+- MC → 外部发送前必须经 `MessageBridge.resolve_send_targets(config)` 去重：
+  同群多条 UMO（隔离对话下每人一条、或重复粘贴）只发一次；完整 UMO **原样发送**，
+  只有短写法（`平台:群号` / 裸群号）才用事件里学到的规范 UMO 回填。
+- 外部消息进 `on_message` 后依次拦截：Bot 自身消息（`self_id == sender_id`）→
+  重复投递（`(平台, message_id)` 短窗口幂等）→ MC → 群刚发出又被平台回传的内容
+  （`is_outbound_echo`，按会话去重键 + 短窗口）。命中任一条都不得转发进 MC。
+- `apply_soft_config()` 改到 `target_sessions` 时必须调用
+  `message_bridge.reregister_server()` 重建索引，否则群 → MC 方向仍按旧会话匹配。
+- `/mc target`（add / remove）由 main 层直接写 conf 条目（`save_config_async`），
+  绑定值取 `event_session_ref(event).canonical`——群消息收敛成群号，避免把
+  发送者 ID 写进配置。
+
+### 4.9 自检
 
 改动纯逻辑后运行 `python3 tests_offline.py`（47 组断言，覆盖配置解析、事件模型、
 转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、
 端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、
-conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」）。
+conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、
+会话 UMO 归一/隔离对话同群全成员匹配、目标会话去重、自消息与重复投递拦截、
+`mc target` 免 UMO 绑定）。
 
 ---
 
@@ -251,5 +278,6 @@ conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失
 - [ ] 事件名/API 名走 `core/constants.py` 常量，未硬编码
 - [ ] 日志带 `[{PLUGIN_NAME}][{server_name}]` 前缀，无空 `except: pass`
 - [ ] 连接层改动已考虑反向模式共享 Server 与 echo 关联时序
+- [ ] 目标会话匹配/去重改动已走 `core/session_router.py`，并覆盖隔离对话场景
 - [ ] `python3 tests_offline.py` 通过
 - [ ] `README.md` / `README_en.md` / `CHANGELOG.md` 已同步，版本号一致

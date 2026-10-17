@@ -6,7 +6,9 @@
 
 import asyncio
 import contextlib
+import copy
 import re
+import time
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -18,6 +20,8 @@ from .core.constants import (
     DEFAULT_IMAGE_HTTP_HOST,
     DEFAULT_IMAGE_HTTP_PORT,
     DEFAULT_IMAGE_UPLOAD_TIMEOUT,
+    MAX_TARGET_SESSIONS,
+    MESSAGE_DEDUPE_WINDOW,
     PLUGIN_DATA_DIR,
     PLUGIN_NAME,
     prefix_matches,
@@ -26,6 +30,11 @@ from .core.constants import (
 from .core.models import QueQiaoEvent
 from .core.models_config import ServerConfig, _to_bool, _to_int, _to_str
 from .core.queqiao_client import QueQiaoTimeout
+from .core.session_router import (
+    event_session_ref,
+    parse_session_entry,
+    session_matches,
+)
 from .core.server_manager import ServerManager
 from .handlers.commands import CommandHandler, parse_direct_address
 from .services.binding import BindingService
@@ -57,8 +66,8 @@ TEMPLATE_KEY_BUILTIN_HTTP = "builtin_http"
     PLUGIN_NAME,
     "XTsat",
     "通过鹊桥模组连接 Minecraft 服务器，实现消息互通、服务器管理与 AI 聊天",
-    "v0.3.4",
-    "https://github.com/XTsat/astrbot_plugin_minecraft_queqiao",
+    "v0.6.6",
+    "https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next",
 )
 class MinecraftQueQiaoPlugin(Star):
     """Minecraft 鹊桥互通主插件类。"""
@@ -102,6 +111,8 @@ class MinecraftQueQiaoPlugin(Star):
         )
         self.web_api.register_routes()
         self._init_task: asyncio.Task | None = None
+        # (平台 ID, message_id) -> 处理时间，用于识别平台重复投递的消息事件
+        self._seen_message_ids: dict[str, float] = {}
 
     # ---- 生命周期 ----
 
@@ -233,6 +244,7 @@ class MinecraftQueQiaoPlugin(Star):
         if config is None or not isinstance(fields, dict):
             return False
         applied = False
+        sessions_applied = False
         for key in self.SOFT_CONFIG_KEYS:
             if key not in fields:
                 continue
@@ -243,8 +255,10 @@ class MinecraftQueQiaoPlugin(Star):
                     config.target_sessions = [
                         str(x).strip() for x in fields["target_sessions"] if str(x).strip()
                     ]
+                    sessions_applied = True
                 elif fields.get("target_sessions") is None:
                     config.target_sessions = []
+                    sessions_applied = True
                 else:
                     # 类型不合法（如字符串）不应用，避免破坏运行时列表
                     continue
@@ -256,6 +270,10 @@ class MinecraftQueQiaoPlugin(Star):
             else:
                 setattr(config, key, str(fields.get(key) or "").strip())
             applied = True
+        if sessions_applied:
+            # 目标会话变了必须重建桥接索引：否则群 → MC 方向仍按旧会话匹配，
+            # 面板保存 / 「mc target add」后要等热重载才生效
+            self.message_bridge.reregister_server(config)
         if not applied:
             return False
         self._warn_prefix_conflict(config)
@@ -850,6 +868,217 @@ class MinecraftQueQiaoPlugin(Star):
         """查看服务器列表与连接状态"""
         yield event.plain_result(await self.command_handler.handle_servers(event))
 
+    # ---- 目标会话快捷绑定（免手写 UMO） ----
+
+    @staticmethod
+    def _event_call(event: AstrMessageEvent, name: str) -> str:
+        """防御式调用事件方法：缺方法 / 抛异常时返回空串。"""
+        func = getattr(event, name, None)
+        if not callable(func):
+            return ""
+        try:
+            return str(func() or "").strip()
+        except Exception:  # noqa: BLE001 - 事件实现异常按缺失处理
+            return ""
+
+    @classmethod
+    def _canonical_session_umo(cls, event: AstrMessageEvent) -> str:
+        """把当前会话写成规范 UMO。
+
+        隔离对话（`unique_session`）下群消息 UMO 会带发送者前缀
+        （`平台:GroupMessage:发送者ID_群ID`），直接存进配置只能匹配那一个人；
+        这里统一收敛成 `平台:GroupMessage:群ID`，全群共用一条配置。
+        """
+        return event_session_ref(event).canonical
+
+    @classmethod
+    def _is_self_message(cls, event: AstrMessageEvent) -> bool:
+        """判断事件是否由 Bot 自身账号发出。
+
+        AstrBot 的 `platform_settings.ignore_bot_self_message` 默认关闭，部分
+        平台会把 Bot 账号（含其它客户端）发出的消息也下发为消息事件；这类
+        事件若转发进 MC，会造成同一条消息在游戏内重复出现，甚至形成
+        「MC → 群 → MC」回环。
+        """
+        self_id = cls._event_call(event, "get_self_id")
+        sender_id = cls._event_call(event, "get_sender_id")
+        return bool(self_id and sender_id and self_id == sender_id)
+
+    def _is_duplicate_event(self, event: AstrMessageEvent) -> bool:
+        """同一条消息事件被平台重复投递时只处理第一次。
+
+        以 (平台 ID, 会话 ID, message_id) 为键做短窗口幂等；message_id
+        缺失的平台（或测试桩）直接放行——没有可靠的键就不猜，避免误吞正常消息。
+        """
+        message_obj = getattr(event, "message_obj", None)
+        message_id = str(getattr(message_obj, "message_id", "") or "").strip()
+        if not message_id:
+            return False
+        platform = self._event_call(event, "get_platform_id") or str(
+            getattr(event, "unified_msg_origin", "") or ""
+        )
+        # 会话 ID 一并入键：部分平台 message_id 按会话自增，只按
+        # (平台, message_id) 去重会把不同会话里「同一编号」的消息误吞
+        session = self._event_call(event, "get_session_id") or str(
+            getattr(event, "unified_msg_origin", "") or ""
+        )
+        key = f"{platform}:{session}:{message_id}"
+        now = time.monotonic()
+        seen = self._seen_message_ids
+        if len(seen) > 512:
+            cutoff = now - MESSAGE_DEDUPE_WINDOW
+            self._seen_message_ids = {k: v for k, v in seen.items() if v >= cutoff}
+            seen = self._seen_message_ids
+        stamp = seen.get(key)
+        if stamp is not None and now - stamp < MESSAGE_DEDUPE_WINDOW:
+            return True
+        seen[key] = now
+        return False
+
+    async def _persist_target_sessions(
+        self, server_name: str, sessions: list[str]
+    ) -> bool:
+        """把目标会话写回插件配置（不触发热重载）。
+
+        只改对应条目顶层的 `target_sessions`，其余字段原样保留；落盘后由
+        `apply_soft_config()` 就地生效并重建桥接索引。
+        """
+        entries = copy.deepcopy(self.config.get("mc_servers") or [])
+        if not isinstance(entries, list):
+            return False
+        clean = [str(x).strip() for x in sessions if str(x).strip()]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            raw_server = entry.get("server")
+            server = raw_server if isinstance(raw_server, dict) else {}
+            if str(server.get("server_name") or "").strip() != server_name:
+                continue
+            entry["target_sessions"] = clean
+            replace = {"mc_servers": entries}
+            saver_async = getattr(self.config, "save_config_async", None)
+            saver = getattr(self.config, "save_config", None)
+            try:
+                if callable(saver_async):
+                    await saver_async(replace)
+                elif callable(saver):
+                    saver(replace)
+                else:
+                    logger.warning(
+                        f"[{PLUGIN_NAME}] 当前配置对象不支持保存，目标会话仅本次运行生效"
+                    )
+                    return False
+            except Exception:
+                logger.error(
+                    f"[{PLUGIN_NAME}][{server_name}] 保存目标会话失败", exc_info=True
+                )
+                return False
+            return True
+        return False
+
+    def _target_overview(self, event: AstrMessageEvent) -> str:
+        """`mc target` 的展示文本：各服务器的目标会话 + 当前会话标识。"""
+        instances = self.server_manager.all()
+        if not instances:
+            return "❌ 尚未配置任何 MC 服务器，请先在插件配置中添加"
+        current = event_session_ref(event)
+        lines = ["🎯 目标会话绑定（游戏内消息发到这些会话，这些会话的消息转发进游戏）"]
+        for index, instance in enumerate(instances, start=1):
+            config = instance.config
+            sessions = list(config.target_sessions)
+            lines.append(f"{index}. {config.display_label}（{len(sessions)} 个）")
+            if not sessions:
+                lines.append("   （未绑定：群里收不到该服务器的消息）")
+                continue
+            for raw in sessions:
+                matched = session_matches(parse_session_entry(raw), current)
+                lines.append(f"   {'✅' if matched else '·'} {raw}")
+        lines.append("")
+        lines.append(f"当前会话：{current.canonical or current.raw or '无法识别'}")
+        lines.append("mc target add [编号] 加入当前会话 / mc target remove [编号] 移除")
+        return "\n".join(lines)
+
+    async def _target_add(self, event: AstrMessageEvent, target: str) -> str:
+        instance, hint = self.command_handler._resolve_target(event, target)
+        if instance is None:
+            return hint or "❌ 无法确定目标服务器"
+        config = instance.config
+        umo = self._canonical_session_umo(event)
+        if not umo:
+            return "❌ 无法识别当前会话，请在群聊或私聊中使用该指令"
+        current = event_session_ref(event)
+        for raw in config.target_sessions:
+            if session_matches(parse_session_entry(raw), current):
+                return (
+                    f"ℹ️ 当前会话已绑定到「{config.display_label}」：{raw}\n"
+                    "无需重复添加"
+                )
+        if len(config.target_sessions) >= MAX_TARGET_SESSIONS:
+            return f"❌ 目标会话数量已达上限（{MAX_TARGET_SESSIONS}），请先移除不用的会话"
+        sessions = list(config.target_sessions) + [umo]
+        if not await self._persist_target_sessions(config.server_name, sessions):
+            return "❌ 写入插件配置失败，详情见 AstrBot 日志"
+        if not self.apply_soft_config(config.server_name, {"target_sessions": sessions}):
+            return (
+                f"✅ 已写入配置：{umo}\n"
+                "⚠️ 运行时未即时生效（服务器可能未启用），重载插件后生效"
+            )
+        return (
+            f"✅ 已把当前会话绑定到「{config.display_label}」\n"
+            f"   {umo}\n"
+            "群消息会转发进游戏，游戏内消息也会发到这个会话"
+        )
+
+    async def _target_remove(self, event: AstrMessageEvent, target: str) -> str:
+        instance, hint = self.command_handler._resolve_target(event, target)
+        if instance is None:
+            return hint or "❌ 无法确定目标服务器"
+        config = instance.config
+        current = event_session_ref(event)
+        kept: list[str] = []
+        removed: list[str] = []
+        for raw in config.target_sessions:
+            if session_matches(parse_session_entry(raw), current):
+                removed.append(raw)
+            else:
+                kept.append(raw)
+        if not removed:
+            return f"ℹ️ 当前会话不在「{config.display_label}」的目标会话中"
+        if not await self._persist_target_sessions(config.server_name, kept):
+            return "❌ 写入插件配置失败，详情见 AstrBot 日志"
+        applied = self.apply_soft_config(config.server_name, {"target_sessions": kept})
+        text = f"✅ 已从「{config.display_label}」移除当前会话（{len(removed)} 条）"
+        if not applied:
+            text += "\n⚠️ 运行时未即时生效（服务器可能未启用），重载插件后生效"
+        return text
+
+    async def _handle_target_command(self, event: AstrMessageEvent, raw: str) -> str:
+        argument = (raw or "").strip()
+        action, _, rest = argument.partition(" ")
+        action = action.strip().lower()
+        rest = rest.strip()
+        if action in ("", "list", "ls", "show"):
+            return self._target_overview(event)
+        if action in ("add", "+"):
+            return await self._target_add(event, rest)
+        if action in ("remove", "rm", "del", "delete", "-"):
+            return await self._target_remove(event, rest)
+        return (
+            "❌ 未知操作。用法：\n"
+            "mc target — 查看目标会话\n"
+            "mc target add [编号] — 把当前会话加入目标会话\n"
+            "mc target remove [编号] — 移除当前会话"
+        )
+
+    @mc_group.command("target")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_target(self, event: AstrMessageEvent, action=GreedyStr):
+        """查看 / 绑定当前会话到服务器的目标会话（免手写 UMO）
+
+        多台服务器时用数字编号指定（与其它 mc 子命令一致）。
+        """
+        yield event.plain_result(await self._handle_target_command(event, str(action)))
+
     # ---- 消息监听：外部 → MC 转发与自定义指令 ----
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -860,7 +1089,6 @@ class MinecraftQueQiaoPlugin(Star):
         会自动附带 @Bot（AstrBot 唤醒判定会因此标记唤醒命令），若在此 return，
         这类回复内容将永远无法转发到游戏。空消息（无文本无图片）由下方统一过滤。
         """
-        umo = event.unified_msg_origin
         text = event.get_message_str().strip()
 
         # 图片不参与文本匹配，但可随消息一起转发到 MC
@@ -868,9 +1096,25 @@ class MinecraftQueQiaoPlugin(Star):
         if not text and not images:
             return
 
+        # Bot 自己发的消息不再回流：AstrBot 的 ignore_bot_self_message 默认关闭，
+        # 平台把自身账号消息下发为事件时，不拦截会造成重复转发 / MC ↔ 群 回环
+        if self._is_self_message(event):
+            logger.debug(f"[{PLUGIN_NAME}] 忽略 Bot 自身消息（不转发进游戏）: {text[:60]}")
+            return
+
+        # 同一条消息被平台重复投递 / 重复触发：短窗口幂等，避免游戏内刷两遍
+        if self._is_duplicate_event(event):
+            logger.info(f"[{PLUGIN_NAME}] 忽略重复投递的消息事件: {text[:60]}")
+            return
+
+        # 刚转发到群的内容被平台回传（部分平台不给 self_id，按内容兜底）
+        if text and self.message_bridge.is_outbound_echo(event, text):
+            logger.debug(f"[{PLUGIN_NAME}] 忽略平台回传的自发消息: {text[:60]}")
+            return
+
         # 自定义指令：仅在会话绑定的服务器上匹配（按文本匹配，图片不参与）
         if text:
-            for server_name, config in self.message_bridge.servers_for_session(umo):
+            for server_name, config in self.message_bridge.servers_for_event(event):
                 actual = self.command_handler.match_custom_command(server_name, text)
                 if actual:
                     instance = self.server_manager.get(server_name)
@@ -887,7 +1131,7 @@ class MinecraftQueQiaoPlugin(Star):
                     return
 
         # 转发到 MC
-        if await self._relay_to_minecraft(event, umo, text, images):
+        if await self._relay_to_minecraft(event, text, images):
             event.stop_event()
 
     @staticmethod
@@ -964,17 +1208,24 @@ class MinecraftQueQiaoPlugin(Star):
         return f"url={url!r} file={file_!r} path={path!r}"
 
     async def _relay_to_minecraft(
-        self, event: AstrMessageEvent, umo: str, text: str, images: list | None = None
+        self, event: AstrMessageEvent, text: str, images: list | None = None
     ) -> bool:
         """把外部会话消息按前缀规则转发到绑定的 MC 服务器。
 
         `images` 为消息链中的图片组件列表；仅当服务器开启了
         `forward_image_to_mc` 且能解析出玩家客户端可访问的 URL 时，
         才以 ChatImage 代码形式追加到广播内容。
+
+        目标服务器按**事件**查询（而不是 UMO 字符串）：隔离对话
+        （`unique_session`）下同一群每个成员的 UMO 都不同，只有事件里
+        的真实群号能统一匹配。
         """
-        targets = self.message_bridge.servers_for_session(umo)
+        targets = self.message_bridge.servers_for_event(event)
         if not targets:
-            logger.debug(f"[{PLUGIN_NAME}] 会话 {umo} 未绑定任何服务器，跳过转发")
+            logger.debug(
+                f"[{PLUGIN_NAME}] 会话 {event.unified_msg_origin} 未绑定任何服务器，"
+                "跳过转发"
+            )
             return False
 
         relayed = False

@@ -281,9 +281,9 @@
           <label class="settings-row">
             <span class="settings-row-label">目标会话（每行一个）</span>
             <span class="settings-row-control">
-              <textarea id="st-fwd-sessions" rows="2" placeholder="default:GroupMessage:123456789" autocomplete="off" spellcheck="false"></textarea>
+              <textarea id="st-fwd-sessions" rows="2" placeholder="default:GroupMessage:123456789（每行一个）" autocomplete="off" spellcheck="false"></textarea>
             </span>
-            <span class="settings-row-hint">仅这些会话参与群 → MC 转发；可用 AstrBot 的 /sid 指令查看</span>
+            <span class="settings-row-hint">这些会话与 MC 双向互通。推荐在目标群里发「mc target add」自动绑定（免手写 UMO）；也可用 AstrBot 的 /sid 查看后手填。开启「隔离对话」时按群号自动匹配，无需为每个成员各配一条</span>
           </label>
         </div>
         <div class="settings-group">
@@ -609,7 +609,7 @@
           <span class="modal-row-control">
             <textarea id="sf-sessions" rows="3" placeholder="default:GroupMessage:123456789（每行一个）"></textarea>
           </span>
-          <span class="modal-row-hint">MC 消息转发到哪些 QQ 会话；每行一个，留空 = 不转发；在对应目标中发 /sid 获取该会话的 UMO</span>
+          <span class="modal-row-hint">MC 消息转发到哪些会话；每行一个，留空 = 不转发。推荐在目标群里发「mc target add」自动绑定；也可用 /sid 获取 UMO 后手填，隔离对话下按群号自动匹配</span>
         </label>
       </div>
       <div class="modal-actions">
