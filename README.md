@@ -1,10 +1,12 @@
 <div align="center">
-<h1>Minecraft 鹊桥互通</h1>
+<h1>Minecraft 鹊桥互通 Next</h1>
 <p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
 <p><img alt="version" src="https://img.shields.io/badge/version-v0.6.6-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
+
+> **Fork 声明（AGPL-3.0）**：本仓库是上游插件 [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao)（作者 XTsat）的 fork，继续以 AGPL-3.0 许可证分发，许可证全文与上游署名保持不变。自 2026-10-19 起插件标识**彻底独立**为 `astrbot_plugin_minecraft_queqiao_next`：包名、日志前缀、Web API 路由前缀与插件数据目录全部改名，两个插件可同时安装、互不读写对方数据；本 fork 的面板偏好 / 绑定 / 互通日志从新数据目录开始，旧数据不自动迁移（如需保留请手动搬运）。完整改动记录见 [CHANGELOG](CHANGELOG.md)。
 
 ## 功能介绍
 
@@ -456,6 +458,7 @@ AstrBot 的 `platform_settings.ignore_bot_self_message` 默认关闭，部分平
 ### 鸣谢
 
 - [鹊桥 QueQiao](https://github.com/17TheWord/QueQiao) — 提供 Minecraft 服务端连接能力
+- [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao)（XTsat）— 本插件的上游项目，本仓库为其 AGPL-3.0 独立 fork
 
 ### License
 

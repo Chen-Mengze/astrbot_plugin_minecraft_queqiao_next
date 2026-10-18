@@ -1,8 +1,8 @@
-name: astrbot_plugin_minecraft_queqiao
-display_name: Minecraft 鹊桥互通
+name: astrbot_plugin_minecraft_queqiao_next
+display_name: Minecraft 鹊桥互通 Next
 desc: 通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天
 version: v0.6.6
-author: XTsat
+author: Chen-Mengze (fork of XTsat)
 repo: https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next
 tags:
   - Minecraft

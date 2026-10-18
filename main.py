@@ -1,4 +1,4 @@
-"""astrbot_plugin_minecraft_queqiao — AstrBot 插件
+"""astrbot_plugin_minecraft_queqiao_next — AstrBot 插件
 
 通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通、服务器管理与 AI 聊天。
 配置结构参照 astrbot_plugin_minecraft_adapter，连接层改用鹊桥 V2 协议。

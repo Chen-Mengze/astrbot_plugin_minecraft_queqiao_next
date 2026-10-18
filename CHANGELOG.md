@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### 变更
+- **插件标识彻底分离（fork 独立化）**：插件包名、`PLUGIN_NAME` / `PLUGIN_DATA_DIR`、Web API 路由前缀、日志二级前缀与前端请求路径全部改为 `astrbot_plugin_minecraft_queqiao_next`，与上游 `astrbot_plugin_minecraft_queqiao`（XTsat）彻底分离——两个插件可同时安装、日志前缀可区分、数据目录互不共用；本 fork 的面板偏好 / 绑定 / 互通日志从新数据目录开始，旧数据不自动迁移。README 顶部加入 fork 显著声明（AGPL-3.0 §5(c)，2026-10-19）、鸣谢保留上游署名、`author` 标注 fork 来源，`LICENSE` 保持 AGPL-3.0 全文不变
+
 ## v0.6.6 (2026-10-17)
 
 ### 新增

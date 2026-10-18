@@ -94,19 +94,19 @@ ws.exceptions=exc; ws.serve=lambda *a,**k:None; ws.connect=lambda *a,**k:None
 sys.modules["websockets"]=ws; sys.modules["websockets.exceptions"]=exc
 
 import importlib.util
-pkg = "astrbot_plugin_minecraft_queqiao"
+pkg = "astrbot_plugin_minecraft_queqiao_next"
 import types as _t
 # 以包形式导入：把当前目录注册为包
 spec = importlib.util.spec_from_file_location(pkg, os.path.join(os.getcwd(), "__init__.py"),
         submodule_search_locations=[os.getcwd()])
 mod = importlib.util.module_from_spec(spec); sys.modules[pkg]=mod; spec.loader.exec_module(mod)
 
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import component_to_text, MessageBridge
-from astrbot_plugin_minecraft_queqiao.services.binding import BindingService
-from astrbot_plugin_minecraft_queqiao.handlers.commands import CommandHandler
-from astrbot_plugin_minecraft_queqiao.core.rcon_client import RconClient
-from astrbot_plugin_minecraft_queqiao.core.models import QueQiaoEvent
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import component_to_text, MessageBridge
+from astrbot_plugin_minecraft_queqiao_next.services.binding import BindingService
+from astrbot_plugin_minecraft_queqiao_next.handlers.commands import CommandHandler
+from astrbot_plugin_minecraft_queqiao_next.core.rcon_client import RconClient
+from astrbot_plugin_minecraft_queqiao_next.core.models import QueQiaoEvent
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig
 import asyncio, tempfile, pathlib, json
 
 print("=== 5. 富文本剥离 ===")
@@ -222,13 +222,13 @@ assert sent[2][1] == "[MC] 💀 Steve was slain by Zombie"
 print("OK  聊天(富文本剥离)/加入/死亡 三类事件均正确转发（加入/死亡消息前置服务器标识 [MC]）")
 
 print("=== 12. main.py 可导入 ===")
-import astrbot_plugin_minecraft_queqiao.main as m
+import astrbot_plugin_minecraft_queqiao_next.main as m
 assert hasattr(m, "MinecraftQueQiaoPlugin")
 print("OK  插件主类加载正常:", m.MinecraftQueQiaoPlugin.__name__)
 
 print("=== 13. 前缀语义：AI 与互通互斥 ===")
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as P
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as SC
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as P
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as SC
 
 # 默认配置：互通开、AI 开、两个前缀独立（转发前缀默认留空 = 全部转发，
 # 因为转发生效前必须先绑定 target_sessions，默认放开不会外溢到未绑定会话）
@@ -287,7 +287,7 @@ sent2 = []
 class _Ctx3:
     async def send_message(self, umo, chain):
         sent2.append(chain.chain[0].text); return True
-import astrbot_plugin_minecraft_queqiao.services.message_bridge as mb_mod
+import astrbot_plugin_minecraft_queqiao_next.services.message_bridge as mb_mod
 br3 = mb_mod.MessageBridge(_Ctx3())
 cfg3 = SC.from_dict({"server":{"server_name":"Srv2"},"ai_chat_prefix":"#ai",
     "message":{"target_sessions":["umo:GroupMessage:9"],"forward_chat_to_astrbot":True}})
@@ -312,7 +312,7 @@ assert not hasattr(d2, "ai_command_enabled"), "不应残留 ai_command_enabled"
 assert not hasattr(d2, "ai_command_name"), "不应残留 ai_command_name"
 assert not hasattr(d2, "resolved_ai_command"), "不应残留 resolved_ai_command"
 # constants 不应导出 match_ai_command
-import astrbot_plugin_minecraft_queqiao.core.constants as _c
+import astrbot_plugin_minecraft_queqiao_next.core.constants as _c
 assert not hasattr(_c, "match_ai_command"), "不应残留 match_ai_command"
 
 cfg = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":"ai"})
@@ -404,8 +404,8 @@ print("\n全部离线逻辑校验通过 ✅（含目标会话位置）")
 
 print("=== 18. 转发回执（mark_option） ===")
 import asyncio as _asyncio
-import astrbot_plugin_minecraft_queqiao.services.message_bridge as _mb_mod
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _S2
+import astrbot_plugin_minecraft_queqiao_next.services.message_bridge as _mb_mod
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _S2
 _MB = _mb_mod.MessageBridge
 
 class _Bot:
@@ -483,7 +483,7 @@ for raw, expect in [(None, 124), ("", 124), ("abc", 124), (76, 76), ("76", 76), 
     payload = {} if raw is None else {"mark_emoji_id": raw}
     got = _S2.from_dict({"message": payload}).mark_emoji_id
     assert got == expect, (raw, got)
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     EMOJI_LOVE,
     EMOJI_OK_GESTURE,
     EMOJI_ROSE,
@@ -498,7 +498,7 @@ print("OK  回执表情 ID 可配置（默认 124 👌），非法输入回落�
 print("\n全部离线逻辑校验通过 ✅（含转发回执）")
 
 print("=== 19. 成就文本降级链（display_text / display_name） ===")
-from astrbot_plugin_minecraft_queqiao.core.models import QueQiaoAchievement as _Ach
+from astrbot_plugin_minecraft_queqiao_next.core.models import QueQiaoAchievement as _Ach
 
 # (***) 实测 payload 回归：鹊桥推送的字段名是 `translation`，**不是**文档写的 `translate`。
 # 曾因只读 `translate` 导致真实事件恒为空，进而整条成就消息丢失。
@@ -642,8 +642,8 @@ print("OK  死亡/成就转发前置服务器标识（[生存服] / [MC] 可区�
 print("\n全部离线逻辑校验通过 ✅（含成就文本降级链）")
 
 print("=== 20. 服务器显示名称与格式占位符 ===")
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _S3
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import MessageBridge as _MB3
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _S3
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import MessageBridge as _MB3
 
 # (a) 取值链必须区分开：
 #     server_label  <- 消息格式 {display_name}：display_name → display_name_default（默认 MC）→ 空串
@@ -798,8 +798,8 @@ print("OK  进出消息前置服务器标识且保持同一条取值链")
 print("\n全部离线逻辑校验通过 ✅（含服务器显示名称）")
 
 print("=== 21. 状态/玩家列表使用显示名称 ===")
-from astrbot_plugin_minecraft_queqiao.services.renderer import InfoRenderer as _IR
-from astrbot_plugin_minecraft_queqiao.core.models import ServerStatus as _SS
+from astrbot_plugin_minecraft_queqiao_next.services.renderer import InfoRenderer as _IR
+from astrbot_plugin_minecraft_queqiao_next.core.models import ServerStatus as _SS
 
 # 未传 label -> 沿用 server_name（旧调用行为不变）
 assert "服务器 svr1 状态获取失败" in _IR.format_status("svr1", None)
@@ -868,7 +868,7 @@ for _path4, _sd4 in _flat_defaults4(_tpl4):
             f"conf 与代码默认值不一致: {'/'.join(_path4)}: schema={_sd4!r} code={_cv4!r}"
 
 # 直接点名钉死本次对齐的三处，失配时报错一眼可见
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     DEFAULT_BROADCAST_FORMAT as _DBF4,
     DEFAULT_CHAT_FORMAT as _DCF4,
 )
@@ -882,15 +882,15 @@ print("\n全部离线逻辑校验通过 ✅（含 conf↔代码默认值守卫�
 
 print("=== 23. API 超时语义：未知 ≠ 失败，禁止重发（AI 回复两遍的根因） ===")
 import json as _json5
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     API_BROADCAST as _APIB5,
     API_RCON as _APIR5,
 )
-from astrbot_plugin_minecraft_queqiao.core.queqiao_client import (
+from astrbot_plugin_minecraft_queqiao_next.core.queqiao_client import (
     QueQiaoClient as _QC5,
     QueQiaoTimeout as _QT5,
 )
-from astrbot_plugin_minecraft_queqiao.core.server_manager import ServerInstance as _SI5
+from astrbot_plugin_minecraft_queqiao_next.core.server_manager import ServerInstance as _SI5
 
 class _FakeWS5:
     """假 WebSocket：record 请求；reply 非空时延迟回一条响应。"""
@@ -979,7 +979,7 @@ print("OK  超时=未知（不重发）：私聊超时不再广播兜底、RCON 
       "确定失败时兜底不受影响")
 
 print("\n=== 24. 平台名称映射（platform_names → {platform}） ===")
-from astrbot_plugin_minecraft_queqiao.core.models_config import (
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import (
     ServerConfig as _S6,
 )
 
@@ -1045,8 +1045,8 @@ assert "=" in _mitems6["platform_names"]["hint"], "hint 必须说明 原始平�
 print("OK  platform_names 解析/取名语义/默认示例 aiocqhttp=QQ/schema 同步 全部通过")
 
 print("\n=== 25. 重连低频退避（reconnect 分组 + 两段式重连等待） ===")
-from astrbot_plugin_minecraft_queqiao.core.queqiao_client import QueQiaoClient as _Q7
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.queqiao_client import QueQiaoClient as _Q7
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     DEFAULT_LOW_FREQUENCY_INTERVAL as _LF_INT7,
     DEFAULT_LOW_FREQUENCY_THRESHOLD as _LF_TH7,
 )
@@ -1136,11 +1136,11 @@ assert "30" in _ritems7["low_frequency_threshold"]["hint"], \
 print("OK  重连配置独立成组置底、默认 30 次后进入低频、低频间隔可自定义、旧配置兼容 全部通过")
 
 print("\n=== 26. 图片转发到 MC（ChatImage 联动） ===")
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import (
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import (
     build_chatimage_code as _bcc,
     resolve_image_url as _riu,
 )
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     DEFAULT_CHATIMAGE_NAME as _DCN26,
 )
 
@@ -1191,7 +1191,7 @@ assert SC.from_dict({"message": {"forward_image_to_mc": "true"}}).forward_image_
 assert SC.from_dict({"message": {"chatimage_name": "  "}}).chatimage_name == "图片"
 
 # (d) 端到端：外部图片消息 → 转发为 ChatImage 代码广播进游戏
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P26
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as _P26
 
 class _Ctx26:
     async def send_message(self, *a, **k): return True
@@ -1308,11 +1308,11 @@ assert _mk26.index("chatimage_name") == _mk26.index("forward_image_to_mc") + 1
 print("OK  CICode 生成 / URL 解析优先级 / 配置解析 / 端到端转发 / 前缀过滤 / schema 同步")
 
 print("\n=== 28. 图片转存服务（内置 HTTP 与第三方图床统一条目列表） ===")
-from astrbot_plugin_minecraft_queqiao.services.image_host import (
+from astrbot_plugin_minecraft_queqiao_next.services.image_host import (
     ImageHost as _IH28,
     guess_image_content_type as _gct28,
 )
-from astrbot_plugin_minecraft_queqiao.services.image_bed import (
+from astrbot_plugin_minecraft_queqiao_next.services.image_bed import (
     BuiltinHttpUploader as _BIH28,
     ImageBedUploader as _IB28,
     ImageBedUploaderGroup as _IBG28,
@@ -1320,17 +1320,17 @@ from astrbot_plugin_minecraft_queqiao.services.image_bed import (
     parse_headers as _ph28,
     VALID_RESPONSE_KINDS as _KIND28,
 )
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import (
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import (
     acquire_image_bytes as _aib28,
     resolve_image_url as _riu28,
 )
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     DEFAULT_IMAGE_HTTP_HOST as _DHOST28,
     DEFAULT_IMAGE_HTTP_PORT as _DPORT28,
     IMAGE_HOST_MAX_IMAGES as _MAX28,
     IMAGE_HOST_TTL as _TTL28,
 )
-from astrbot_plugin_minecraft_queqiao.main import (
+from astrbot_plugin_minecraft_queqiao_next.main import (
     MinecraftQueQiaoPlugin as _P28,
     TEMPLATE_KEY_BUILTIN_HTTP as _TK28,
 )
@@ -1630,10 +1630,10 @@ assert "不限定" in _tpls28["custom"]["items"]["upload_url"]["hint"] or \
     "自定义模板的 upload_url hint 应体现不限制服务商"
 
 # (f) 内置图片 HTTP 条目守卫：base_url 为空不启用；启动失败回滚 base_url
-from astrbot_plugin_minecraft_queqiao.services.image_bed import (
+from astrbot_plugin_minecraft_queqiao_next.services.image_bed import (
     BuiltinHttpUploader as _BH28,
 )
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     DEFAULT_IMAGE_HTTP_HOST as _DEFH28,
     DEFAULT_IMAGE_HTTP_PORT as _DEFPORT28,
 )
@@ -1696,7 +1696,7 @@ assert asyncio.run(_bh28d.upload(b"x"))[1].startswith("监听未启动"), \
 print("OK  MIME 猜测 / 登记与缓存 / 字节获取 / resolve 优先级 / 内置服务生命周期")
 
 # (g) 通用图床方案：不限服务商 / enabled 语义 / 多条目接线 / resolve 联动
-from astrbot_plugin_minecraft_queqiao.services.image_bed import (
+from astrbot_plugin_minecraft_queqiao_next.services.image_bed import (
     ImageBedUploader as _IB28,
     ImageBedUploaderGroup as _IBG28,
     UPLOAD_TIMEOUT as _UT28,
@@ -2114,14 +2114,14 @@ assert asyncio.run(_cap_text(_IB28("https://imglink.cc/api/upload", response="js
 print("OK  MIME 猜测 / 登记与缓存 / 字节获取 / resolve 优先级 / 图床自由接入 / multipart 报文 / 根级配置守卫")
 
 print("\n=== 29. 游戏内图片转发到外部（forward_image_from_mc） ===")
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import (
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import (
     extract_image_refs as _eir29,
     strip_image_refs as _sir29,
     file_uri_to_local_path as _furi29,
     download_image_bytes as _dib29,
     MessageBridge as _MB29,
 )
-from astrbot_plugin_minecraft_queqiao.core.constants import (
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     MAX_IMAGE_DOWNLOAD_BYTES as _MAX29,
 )
 
@@ -2283,13 +2283,13 @@ assert _mk29.index("forward_image_from_mc") == _mk29.index("chatimage_name") + 1
 print("OK  引用提取 / 剥离与保留 / file 路径解析 / 下载字节 / 配置解析 / 端到端 / schema 同步")
 
 print("\n=== 30. 在线玩家三层兜底（RCON list → SLP sample → 人数） ===")
-from astrbot_plugin_minecraft_queqiao.core.models import (
+from astrbot_plugin_minecraft_queqiao_next.core.models import (
     PlayerListResult as _PLR30, ServerStatus as _SS30,
 )
-from astrbot_plugin_minecraft_queqiao.core.queqiao_client import QueQiaoTimeout as _QT30
-from astrbot_plugin_minecraft_queqiao.core.server_manager import ServerInstance as _SI30
-from astrbot_plugin_minecraft_queqiao.services.renderer import InfoRenderer as _IR30
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _S30
+from astrbot_plugin_minecraft_queqiao_next.core.queqiao_client import QueQiaoTimeout as _QT30
+from astrbot_plugin_minecraft_queqiao_next.core.server_manager import ServerInstance as _SI30
+from astrbot_plugin_minecraft_queqiao_next.services.renderer import InfoRenderer as _IR30
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _S30
 
 # (a) ServerStatus 解析 players.sample：剥离 § 格式码、跳过空名/畸形项
 _st30 = _SS30.from_dict({
@@ -2464,10 +2464,10 @@ print("OK  sample 解析(剥离§/跳畸形) / 渲染含RCON通道细分 / 三�
 print("\n全部离线逻辑校验通过 ✅（含在线玩家三层兜底）")
 
 print("\n=== 31. 多服务器：数字编号指定目标与单服省略 ===")
-from astrbot_plugin_minecraft_queqiao.handlers.commands import CommandHandler as _CH31
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC31
-import astrbot_plugin_minecraft_queqiao.handlers.commands as _cmd_mod31
-import astrbot_plugin_minecraft_queqiao.core.constants as _c31
+from astrbot_plugin_minecraft_queqiao_next.handlers.commands import CommandHandler as _CH31
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC31
+import astrbot_plugin_minecraft_queqiao_next.handlers.commands as _cmd_mod31
+import astrbot_plugin_minecraft_queqiao_next.core.constants as _c31
 
 
 class _Inst31:
@@ -2570,8 +2570,8 @@ print("OK  数字编号拆分(仅多服) / 单服省略自动命中 / 多服提�
       "死代码已移除 / help 已同步")
 
 print("\n=== 32. 重复 server_name 告警发送到目标会话 ===")
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P32
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC32
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as _P32
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC32
 import asyncio as _asyncio32
 
 
@@ -2619,9 +2619,9 @@ print("OK  重复告警发到目标会话 / 无会话不发 / 发送失败安全
 
 print("\n=== 33. 服务器列表展示显示名称（handle_servers） ===")
 import asyncio as _asyncio33
-from astrbot_plugin_minecraft_queqiao.handlers.commands import CommandHandler as _CH33
-from astrbot_plugin_minecraft_queqiao.core.server_manager import ServerManager as _SM33
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC33
+from astrbot_plugin_minecraft_queqiao_next.handlers.commands import CommandHandler as _CH33
+from astrbot_plugin_minecraft_queqiao_next.core.server_manager import ServerManager as _SM33
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC33
 
 _sm33 = _SM33()
 _cfg_s1 = _SC33.from_dict({
@@ -2652,9 +2652,9 @@ print("OK  有 display_name 显示「显示名称 (server_name)」、无 display
 
 print("\n=== 34. Web API 控制器与 Metrics 指标系统 ===")
 import asyncio as _asyncio34
-from astrbot_plugin_minecraft_queqiao.services.metrics import MetricsCollector as _MC34
-from astrbot_plugin_minecraft_queqiao.services.web_api import WebApiController as _WAC34
-from astrbot_plugin_minecraft_queqiao.core.models import ServerStatus as _SS34, PlayerListResult as _PLR34
+from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MC34
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import WebApiController as _WAC34
+from astrbot_plugin_minecraft_queqiao_next.core.models import ServerStatus as _SS34, PlayerListResult as _PLR34
 
 # (a) ServerStatus.to_dict 与 PlayerListResult.to_dict 结构校验
 _ss34 = _SS34(
@@ -2743,7 +2743,7 @@ assert _SS34.from_dict({"server_list_ping": {"available": False}}).slp_available
 assert _SS34.from_dict({"cpu_information": {"process_load": None}}).process_load is None
 
 # (a3) format_status 渲染 JVM/进程负载（命令 /ai 状态 文本输出）
-from astrbot_plugin_minecraft_queqiao.services.renderer import InfoRenderer as _IR34
+from astrbot_plugin_minecraft_queqiao_next.services.renderer import InfoRenderer as _IR34
 # 同机部署：注入与鹊桥 MemTotal 一致的宿主机内存 → 物理内存按 MemAvailable 修正
 _host_mem34 = {
     "MemTotal": _ss34_full.memory_total,
@@ -2766,8 +2766,8 @@ assert "空闲：" not in _fmt34_remote, _fmt34_remote
 assert "JVM 堆：372MB 已用 / 464MB 已申请 / 8176MB 上限 (4.6%)" in _fmt34_remote, _fmt34_remote
 
 # (a4) correct_physical_memory 单元断言：同机修正 / 跨机清零 / 无数据不动
-from astrbot_plugin_minecraft_queqiao.services import host_mem as _hm34
-from astrbot_plugin_minecraft_queqiao.services.host_mem import (
+from astrbot_plugin_minecraft_queqiao_next.services import host_mem as _hm34
+from astrbot_plugin_minecraft_queqiao_next.services.host_mem import (
     correct_physical_memory as _cpm34,
 )
 # 同机：used = MemTotal - MemAvailable（排除 page cache）
@@ -2865,7 +2865,7 @@ _configs34 = {
     "Server1": _cfg_s2,
 }
 # 持久化终端日志存储（临时目录），供仪表盘跨会话恢复历史
-from astrbot_plugin_minecraft_queqiao.services.terminal_log import TerminalLogStore as _TLS34
+from astrbot_plugin_minecraft_queqiao_next.services.terminal_log import TerminalLogStore as _TLS34
 _tls34 = _TLS34(_Path34("/tmp/queqiao_test_terminal"))
 _tls34.load()
 _wac34 = _WAC34(
@@ -2884,15 +2884,15 @@ _wac34.register_routes()
 # /config/image_bed 及 create/update/delete）；/page/switch 互切路由已移除
 assert len(_mock_ctx34.routes) == 31, f"注册路由数不符: {len(_mock_ctx34.routes)}"
 _route_paths = [r[0] for r in _mock_ctx34.routes]
-assert "/astrbot_plugin_minecraft_queqiao/servers" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/stats" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/server/<server_name>/status" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/server/<server_name>/players" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/server/<server_name>/command" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/server/<server_name>/broadcast" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/terminal_logs" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/terminal_logs/clear" in _route_paths
-assert "/astrbot_plugin_minecraft_queqiao/image_bed/templates" in _route_paths, \
+assert "/astrbot_plugin_minecraft_queqiao_next/servers" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/stats" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/server/<server_name>/status" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/server/<server_name>/players" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/server/<server_name>/command" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/server/<server_name>/broadcast" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/terminal_logs" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/terminal_logs/clear" in _route_paths
+assert "/astrbot_plugin_minecraft_queqiao_next/image_bed/templates" in _route_paths, \
     "web_api 缺少 /image_bed/templates 模板默认值路由"
 
 # 测试 get_servers 与 get_stats 响应格式
@@ -2927,7 +2927,7 @@ async def _fake_queqiao_rcon(cmd: str) -> str:
     return "There are 1 of a max of 20 players online: Player_A"
 
 _mock_instance.client.send_rcon_command = _fake_queqiao_rcon  # type: ignore[method-assign]
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wam34b
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wam34b
 _wam34b.request.query = {"force": "1"}  # 模拟进入面板/手动刷新：触发 RCON 探测
 _res_servers3 = _asyncio34.run(_wac34.get_servers())
 _server_srv1 = next(
@@ -2944,7 +2944,7 @@ _mock_instance.online_players.clear()  # 清空 (e) 期间被 list 探测填充�
 
 # ③ /servers?force=1（仪表盘手动刷新）→ fetch_player_list 收到 force_rcon=True；
 #    普通请求 / 非法值 → False（自动轮询不重复探测）
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wam34
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wam34
 _force_calls34 = []
 _orig_fetch34 = _mock_instance.fetch_player_list
 async def _spy_fetch34(force_rcon=False, status_model=None):
@@ -3030,7 +3030,7 @@ _res_503 = _asyncio34.run(_wac34.get_server_status("Server"))
 assert _res_503["status_code"] == 503
 
 # (d) 在线玩家事件追踪与 event_cache 兜底
-from astrbot_plugin_minecraft_queqiao.core.models import QueQiaoEvent as _QE34, QueQiaoPlayer as _QP34
+from astrbot_plugin_minecraft_queqiao_next.core.models import QueQiaoEvent as _QE34, QueQiaoPlayer as _QP34
 _inst_tracker = _sm33.get("Server")
 assert _inst_tracker is not None
 # 触发玩家加入事件
@@ -3181,7 +3181,7 @@ assert not (_tls_dir / "terminal_logs" / f"{_yesterday_key}.json").exists(), "�
 assert (_tls_dir / "terminal_logs" / f"{_today_key}.json").exists(), "仍有内容的当天分片保留"
 
 # Web API：GET 拉取与 POST 清屏
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wa_module34
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa_module34
 # 缺少 server 参数 → 400
 _wa_module34.request.query = {}
 _res_tl_bad = _asyncio34.run(_wac34.get_terminal_logs())
@@ -3217,8 +3217,8 @@ import asyncio as _asyncio35
 import shutil as _shutil35
 import time as _time35
 from datetime import date as _date35, timedelta as _td35, datetime as _dt35
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC35
-from astrbot_plugin_minecraft_queqiao.services.monitor import (
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC35
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import (
     MonitorCollector as _MC35,
     MonitorSample as _MS35,
     MonitorSettings as _MSettings35,
@@ -3226,7 +3226,7 @@ from astrbot_plugin_minecraft_queqiao.services.monitor import (
     parse_tps as _parse_tps35,
     safe_server_name as _safe_name35,
 )
-from astrbot_plugin_minecraft_queqiao.services.slp_ping import (
+from astrbot_plugin_minecraft_queqiao_next.services.slp_ping import (
     brand_from_slp as _brand35,
     mc_ping as _mc_ping35,
 )
@@ -3289,7 +3289,7 @@ assert _MSettings35.from_dict({"auto_refresh_interval": 1}).auto_refresh_interva
 assert _MSettings35.from_dict({"auto_refresh_interval": 99999}).auto_refresh_interval == 3600
 assert _MSettings35.from_dict({}).auto_refresh_interval == 10
 # auto 指令解析：按 get_status 识别到的服务端类型自动选指令
-from astrbot_plugin_minecraft_queqiao.services.monitor import (  # noqa: E402
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import (  # noqa: E402
     resolve_tps_command as _resolve_tps35,
 )
 assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps"
@@ -3389,7 +3389,7 @@ _keys35 = list(_items35.keys())
 assert "monitor" not in _items35, "监控设置不应出现在 conf schema 中"
 assert _keys35.index("reconnect") == len(_keys35) - 1, "reconnect 分组必须位于模板项最底部"
 # 代码默认值与常量一致
-from astrbot_plugin_minecraft_queqiao.core.constants import (  # noqa: E402
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (  # noqa: E402
     DEFAULT_MONITOR_INTERVAL as _DMI35,
     DEFAULT_MONITOR_RETENTION_DAYS as _DMRD35,
     DEFAULT_MONITOR_TPS_COMMAND as _DMTC35,
@@ -3646,8 +3646,8 @@ class _MockCtx35:
     def register_web_api(self, path, handler, methods, desc):
         self.routes.append((path, handler, methods, desc))
 
-from astrbot_plugin_minecraft_queqiao.services.web_api import WebApiController as _WAC35
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wa35
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import WebApiController as _WAC35
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa35
 
 _ctx35 = _MockCtx35()
 _wac35 = _WAC35(_ctx35, _sm35, None, None, None,
@@ -3658,12 +3658,12 @@ _wac35.register_routes()
 # + 5 条监控路由；无互切路由
 assert len(_ctx35.routes) == 36, f"监控注入后应注册 36 条路由, 实际 {len(_ctx35.routes)}"
 _rp35 = [r[0] for r in _ctx35.routes]
-assert "/astrbot_plugin_minecraft_queqiao/monitor/status" in _rp35
-assert "/astrbot_plugin_minecraft_queqiao/monitor/<server_name>/series" in _rp35
-assert "/astrbot_plugin_minecraft_queqiao/monitor/settings" in _rp35
-assert "/astrbot_plugin_minecraft_queqiao/monitor/<server_name>/sample" in _rp35
-assert "/astrbot_plugin_minecraft_queqiao/monitor/<server_name>/clear" in _rp35, "清除数据路由应注册"
-assert "/astrbot_plugin_minecraft_queqiao/panel/prefs" in _rp35, "面板偏好路由应注册"
+assert "/astrbot_plugin_minecraft_queqiao_next/monitor/status" in _rp35
+assert "/astrbot_plugin_minecraft_queqiao_next/monitor/<server_name>/series" in _rp35
+assert "/astrbot_plugin_minecraft_queqiao_next/monitor/settings" in _rp35
+assert "/astrbot_plugin_minecraft_queqiao_next/monitor/<server_name>/sample" in _rp35
+assert "/astrbot_plugin_minecraft_queqiao_next/monitor/<server_name>/clear" in _rp35, "清除数据路由应注册"
+assert "/astrbot_plugin_minecraft_queqiao_next/panel/prefs" in _rp35, "面板偏好路由应注册"
 # monitor/status：每台服务器一份状态（默认开启）
 _res_mstat35 = _asyncio35.run(_wac35.get_monitor_status())
 _mons35 = _res_mstat35["data"]["monitors"]
@@ -3759,13 +3759,13 @@ print("OK  TPS 解析 / 监控配置与 schema 守卫(不进 conf) / 时序存�
 
 print("\n=== 36. 直连 host:port 状态/玩家查询（mc status/list <地址>） ===")
 import asyncio as _asyncio36
-from astrbot_plugin_minecraft_queqiao.handlers.commands import (
+from astrbot_plugin_minecraft_queqiao_next.handlers.commands import (
     CommandHandler as _CH36,
     parse_direct_address as _parse_addr36,
 )
-from astrbot_plugin_minecraft_queqiao.services.renderer import InfoRenderer as _IR36
-from astrbot_plugin_minecraft_queqiao.services.slp_ping import McPingResult as _MPR36
-import astrbot_plugin_minecraft_queqiao.handlers.commands as _cmd_mod36
+from astrbot_plugin_minecraft_queqiao_next.services.renderer import InfoRenderer as _IR36
+from astrbot_plugin_minecraft_queqiao_next.services.slp_ping import McPingResult as _MPR36
+import astrbot_plugin_minecraft_queqiao_next.handlers.commands as _cmd_mod36
 
 # (a) 地址解析：host[:port] 各形态 / 编号不误判 / 非法输入
 assert _parse_addr36("127.0.0.1:25565") == ("127.0.0.1", 25565)
@@ -3893,7 +3893,7 @@ print("OK  地址解析(IPv4/域名/端口/IPv6/编号不误判) / 直连状态�
 
 print("\n=== 37. 实时采样互斥：sample_now 与正常周期不并发（跳过堆积） ===")
 import asyncio as _asyncio37
-from astrbot_plugin_minecraft_queqiao.services.monitor import MonitorCollector as _MC37
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import MonitorCollector as _MC37
 
 _mdir37 = pathlib.Path("/tmp/queqiao_test_monitor37")
 if _mdir37.exists():
@@ -3934,8 +3934,8 @@ print("OK  锁空闲正常采样 / 锁占用跳过不堆积 / 释放后恢复 / 
 
 print("\n=== 38. 实时采样后端常驻任务（与正常周期同架构） ===")
 import asyncio as _asyncio38
-from astrbot_plugin_minecraft_queqiao.services.monitor import MonitorCollector as _MC38
-from astrbot_plugin_minecraft_queqiao.services.monitor import MonitorSample as _MS38
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import MonitorCollector as _MC38
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import MonitorSample as _MS38
 import time as _time38
 
 _mdir38 = pathlib.Path("/tmp/queqiao_test_monitor38")
@@ -4004,7 +4004,7 @@ _asyncio38.run(_rt38())
 print("OK  实时任务随 start 常驻 / 与正常周期同锁串行 / 设置即时生效 / 自动采样 / 尾部扫描窗口过滤与排序 / stop 全量取消")
 
 print("\n=== 39. 面板级偏好长期存储（后端 panel_prefs.json） ===")
-from astrbot_plugin_minecraft_queqiao.services.panel_prefs import PanelPrefsStore as _PP39
+from astrbot_plugin_minecraft_queqiao_next.services.panel_prefs import PanelPrefsStore as _PP39
 
 _mdir39 = pathlib.Path("/tmp/queqiao_test_prefs39")
 if _mdir39.exists():
@@ -4137,12 +4137,12 @@ assert _col41.store.series("Srv", _base41 - 3600, 600, cap_seconds=86400)["laten
 print("OK  61→稳定60 / 不足上限不截断 / 长窗口cap不误伤")
 
 print("\n=== 42. 连接层运行观测（runtime_stats / 重连回调 / 超时计数 / API 暴露） ===")
-from astrbot_plugin_minecraft_queqiao.core.queqiao_client import (
+from astrbot_plugin_minecraft_queqiao_next.core.queqiao_client import (
     QueQiaoClient as _QC42, QueQiaoTimeout as _QTO42,
     SharedReverseServer as _SRS42, reverse_servers_snapshot as _rss42,
 )
-from astrbot_plugin_minecraft_queqiao.core.server_manager import ServerManager as _SM42
-from astrbot_plugin_minecraft_queqiao.services.metrics import MetricsCollector as _Metrics42
+from astrbot_plugin_minecraft_queqiao_next.core.server_manager import ServerManager as _SM42
+from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _Metrics42
 
 # (a) runtime_stats 字段齐全且只读反映内部状态
 _cfg42 = _SC35.from_dict({"server": {"server_name": "Srv42", "ws_mode": "forward"},
@@ -4244,14 +4244,14 @@ print("OK  runtime_stats 只读观测 / 退避与上限回调 / 超时计数且�
 print("\n=== 43. 面板直接管理 conf 服务器条目（新建/启用/改/删 + 热重载） ===")
 import copy as _copy43
 import pathlib as _pl43
-from astrbot_plugin_minecraft_queqiao.services.web_api import (
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import (
     WebApiController as _WAC43,
     _as_bool as _ab43,
     _as_int as _ai43,
     _as_str_list as _asl43,
     _schema_default as _sd43,
 )
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wa43
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa43
 
 # --- schema 默认值推导（与配置页前端 makeDefault 同语义） ---
 assert _sd43({"type": "bool", "default": True}) is True
@@ -4356,10 +4356,10 @@ _wac43 = _WAC43(
 _wac43.register_routes()
 _rp43 = [r[0] for r in _ctx43.routes]
 for _p43 in (
-    "/astrbot_plugin_minecraft_queqiao/config/servers",
-    "/astrbot_plugin_minecraft_queqiao/config/server/create",
-    "/astrbot_plugin_minecraft_queqiao/config/server/update",
-    "/astrbot_plugin_minecraft_queqiao/config/server/delete",
+    "/astrbot_plugin_minecraft_queqiao_next/config/servers",
+    "/astrbot_plugin_minecraft_queqiao_next/config/server/create",
+    "/astrbot_plugin_minecraft_queqiao_next/config/server/update",
+    "/astrbot_plugin_minecraft_queqiao_next/config/server/delete",
 ):
     assert _p43 in _rp43, f"缺少路由 {_p43}"
 
@@ -4469,9 +4469,9 @@ print("OK  条目列表(含未启用) / 新建按 schema 补齐 / 启用切换 /
 print("\n=== 44. 仪表盘「功能设置」面板（AI 对话开关 / 面板偏好 / 折叠状态） ===")
 import shutil as _sh44
 import pathlib as _pl44
-from astrbot_plugin_minecraft_queqiao.services.panel_prefs import PanelPrefsStore as _PP44
-from astrbot_plugin_minecraft_queqiao.services.web_api import WebApiController as _WAC44
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wa44
+from astrbot_plugin_minecraft_queqiao_next.services.panel_prefs import PanelPrefsStore as _PP44
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import WebApiController as _WAC44
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa44
 
 _mdir44 = _pl44.Path("/tmp/queqiao_test_settings44")
 if _mdir44.exists():
@@ -4508,7 +4508,7 @@ _wac44 = _WAC44(
     {"Server": _cfg44_run}, None, None, _pp44, _plugin44,
 )
 
-from astrbot_plugin_minecraft_queqiao.core.models_config import _to_bool as _to_bool44
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import _to_bool as _to_bool44
 
 _plugin44.SOFT_CONFIG_KEYS = (
     "enable_ai_chat",
@@ -4855,12 +4855,12 @@ print("OK  AI 字段条目顶层读写(不污染 server 子对象) / 前缀置�
 print("\n=== 29. 图床面板（路由 / 局部生效不重连 / 条目 CRUD / 内置运行态 / 状态视图） ===")
 import shutil as _sh29
 import pathlib as _pl29
-from astrbot_plugin_minecraft_queqiao.services.web_api import WebApiController as _WAC29
-from astrbot_plugin_minecraft_queqiao.services.image_bed import (
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import WebApiController as _WAC29
+from astrbot_plugin_minecraft_queqiao_next.services.image_bed import (
     BuiltinHttpUploader as _BH29,
     ImageBedUploaderGroup as _IBG29,
 )
-import astrbot_plugin_minecraft_queqiao.services.web_api as _wa29
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa29
 
 class _Host29Stub:
     """内置服务生命周期桩：不真开端口，记录 start/stop 调用。"""
@@ -4968,13 +4968,13 @@ _wac29 = _WAC29(
 _wac29.register_routes()
 _rp29 = [r[0] for r in _ctx29.routes]
 for _p29 in (
-    "/astrbot_plugin_minecraft_queqiao/image_bed/status",
-    "/astrbot_plugin_minecraft_queqiao/image_bed/test",
-    "/astrbot_plugin_minecraft_queqiao/image_bed/switch",
-    "/astrbot_plugin_minecraft_queqiao/config/image_bed",
-    "/astrbot_plugin_minecraft_queqiao/config/image_bed/create",
-    "/astrbot_plugin_minecraft_queqiao/config/image_bed/update",
-    "/astrbot_plugin_minecraft_queqiao/config/image_bed/delete",
+    "/astrbot_plugin_minecraft_queqiao_next/image_bed/status",
+    "/astrbot_plugin_minecraft_queqiao_next/image_bed/test",
+    "/astrbot_plugin_minecraft_queqiao_next/image_bed/switch",
+    "/astrbot_plugin_minecraft_queqiao_next/config/image_bed",
+    "/astrbot_plugin_minecraft_queqiao_next/config/image_bed/create",
+    "/astrbot_plugin_minecraft_queqiao_next/config/image_bed/update",
+    "/astrbot_plugin_minecraft_queqiao_next/config/image_bed/delete",
 ):
     assert _p29 in _rp29, f"缺少图床路由 {_p29}"
 
@@ -5323,9 +5323,9 @@ print("\n=== 45. main._on_queqiao_event 死亡/成就分支（as_text 幽灵方�
 # （实测日志：'QueQiaoTranslate' object has no attribute 'as_text'）。
 # 不实例化完整插件（需 AstrBot 环境），用 __new__ 绕过 __init__，
 # 只注入该函数依赖的四个成员，验证分支不抛异常且事件有记录。
-import astrbot_plugin_minecraft_queqiao.main as _m45
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC45
-from astrbot_plugin_minecraft_queqiao.services.metrics import MetricsCollector as _MC45
+import astrbot_plugin_minecraft_queqiao_next.main as _m45
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC45
+from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MC45
 
 class _TL45:
     def __init__(self):
@@ -5382,7 +5382,7 @@ assert any("upgrade_tools" in r[2] for r in _rows45), \
 print("OK  死亡/成就事件不再抛 as_text AttributeError，且正确进入记录链路")
 
 print("\n=== 46. 插件本地翻译（Translator：键/英文/模板/回退） ===")
-from astrbot_plugin_minecraft_queqiao.services.translator import Translator as _T46
+from astrbot_plugin_minecraft_queqiao_next.services.translator import Translator as _T46
 
 _t46 = _T46()
 _t46._load_key2zh()  # 预热，避免误报数据文件缺失
@@ -5502,8 +5502,8 @@ assert _t46.translate_achievement(_a46c.achievement) == "获得升级", \
 print("OK  Translator 键翻译 / 英文表 / 整句模板 / 回退 / 中文透传 / 成就 title_key 全通过")
 
 print("\n=== 47. 本地翻译开关集成（_on_queqiao_event + format_event） ===")
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import MessageBridge as _MB46
-from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC46
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import MessageBridge as _MB46
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC46
 
 class _TL46:
     def __init__(self):
@@ -5634,7 +5634,7 @@ def _run49(agen):
         return out
     return asyncio.new_event_loop().run_until_complete(_drain())
 
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P49
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as _P49
 
 # (a) 回复 Bot 的游戏消息（is_at_or_wake_command=True）→ 仍转发到 MC
 _pi49 = _P49(_Ctx26(), {})
@@ -5680,7 +5680,7 @@ print("\n=== 50. 回复 Bot 的游戏消息 → 游戏内显示 @原玩家 ===")
 # 结构反解玩家名；player 段须为合法 Minecraft 玩家名（3-16 位字母/数字/
 # 下划线），格式含 display_name 段时还须与服务器显示名一致（防止把 QQ 聊天
 # 等其它回复误判为游戏消息）。
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P50
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as _P50
 from astrbot.api.message_components import Reply as _Reply50
 
 class _Ev50(_Ev49):
@@ -5775,7 +5775,7 @@ print("OK  回复游戏消息反解玩家名 / 非游戏消息不加 @ / 自定�
 
 print("\n=== 51. 会话匹配（隔离对话）/ 重复转发防护 / mc target 免 UMO 绑定 ===")
 import copy as _copy51
-from astrbot_plugin_minecraft_queqiao.core.session_router import (
+from astrbot_plugin_minecraft_queqiao_next.core.session_router import (
     composite_group_id as _cgi51,
     event_session_ref as _esr51,
     normalize_message_type as _nmt51,
@@ -5784,8 +5784,8 @@ from astrbot_plugin_minecraft_queqiao.core.session_router import (
     session_matches as _sm51,
     split_umo as _sumo51,
 )
-from astrbot_plugin_minecraft_queqiao.services.message_bridge import MessageBridge as _MB51
-from astrbot_plugin_minecraft_queqiao.main import MinecraftQueQiaoPlugin as _P51
+from astrbot_plugin_minecraft_queqiao_next.services.message_bridge import MessageBridge as _MB51
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as _P51
 
 # ---- (a) UMO 解析 / 归一 ----
 assert _sumo51("aiocqhttp:GroupMessage:123456789") == (

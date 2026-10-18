@@ -10,3 +10,6 @@ venv/
 .DS_Store
 .notes/
 .dsh-vision-router/
+
+# pymanager 在无用户级配置的环境里会把托管 Python 装到当前目录（运行离线自检的副产物，勿入库）
+Python/

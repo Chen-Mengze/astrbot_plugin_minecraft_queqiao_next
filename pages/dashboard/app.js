@@ -425,7 +425,7 @@ class DashboardApp {
       return await this.bridge.apiGet(endpoint, params);
     }
     const query = new URLSearchParams(params).toString();
-    const url = `/api/v1/plugins/extensions/astrbot_plugin_minecraft_queqiao/${endpoint}${query ? '?' + query : ''}`;
+    const url = `/api/v1/plugins/extensions/astrbot_plugin_minecraft_queqiao_next/${endpoint}${query ? '?' + query : ''}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP error ${res.status}`);
     return await res.json();
@@ -435,7 +435,7 @@ class DashboardApp {
     if (this.bridge && typeof this.bridge.apiPost === 'function') {
       return await this.bridge.apiPost(endpoint, body);
     }
-    const url = `/api/v1/plugins/extensions/astrbot_plugin_minecraft_queqiao/${endpoint}`;
+    const url = `/api/v1/plugins/extensions/astrbot_plugin_minecraft_queqiao_next/${endpoint}`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

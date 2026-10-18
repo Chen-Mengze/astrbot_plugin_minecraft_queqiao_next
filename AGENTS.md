@@ -1,4 +1,4 @@
-# AGENTS.md — astrbot_plugin_minecraft_queqiao
+# AGENTS.md — astrbot_plugin_minecraft_queqiao_next
 
 > 本项目遵循 [agent-templates](https://github.com/XTsat/agent-templates) 的 AstrBot 插件规范模板。
 > 完整规范请阅读：https://github.com/XTsat/agent-templates/blob/main/templates/astrbot-plugin/AGENTS.md
@@ -10,8 +10,12 @@
 
 ## 1. 项目概览
 
-**astrbot_plugin_minecraft_queqiao** 是 AstrBot 插件：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao)
+**astrbot_plugin_minecraft_queqiao_next** 是 AstrBot 插件：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao)
 模组连接 Minecraft 服务器，实现群服消息互通、服务器管理与 AI 聊天。
+
+> 本仓库是上游 [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao)（作者 XTsat）的
+> AGPL-3.0 fork，自 2026-10-19 起标识**彻底分离**（一切标识符 / 前缀 / 数据目录均为 `*_next`）：
+> 与上游可同时安装、数据互不共用；上游署名与许可证保持不变。
 
 - 配置结构**参照** [astrbot_plugin_minecraft_adapter](https://github.com/railgun19457/astrbot_plugin_minecraft_adapter)
 - 连接方式**替换**为鹊桥 V2 协议（WebSocket + `echo` 请求响应关联）
@@ -36,7 +40,7 @@
 采用**分层多文件**风格（模板 §2.2），依赖方向严格单向：
 
 ```
-astrbot_plugin_minecraft_queqiao/
+astrbot_plugin_minecraft_queqiao_next/
 ├── main.py                 # 插件入口：注册、命令组、生命周期、事件编排
 ├── core/                   # 核心层：配置模型 + 协议模型 + 连接管理
 │   ├── constants.py        #   常量（协议标识/默认值/重连参数）—— 零内部依赖

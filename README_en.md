@@ -1,10 +1,12 @@
 <div align="center">
-<h1>Minecraft Queqiao</h1>
+<h1>Minecraft Queqiao Next</h1>
 <p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
 <p><img alt="version" src="https://img.shields.io/badge/version-v0.6.6-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
+
+> **Fork notice (AGPL-3.0)**: this repository is a fork of the upstream plugin [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) by XTsat, redistributed under the unchanged AGPL-3.0 license with upstream attribution preserved. Since 2026-10-19 the plugin identity is **fully separated** as `astrbot_plugin_minecraft_queqiao_next`: package name, log prefixes, Web API route prefix and the plugin data directory are all renamed, so the fork and the upstream plugin can be installed side by side without sharing any data; fork-side panel prefs / bindings / bridge logs start from a fresh data directory and old data is not migrated automatically. See the [CHANGELOG](CHANGELOG.md) for the full record.
 
 ## Features
 
@@ -436,6 +438,7 @@ AstrBot's `platform_settings.ignore_bot_self_message` is off by default and some
 ### Credits
 
 - [QueQiao](https://github.com/17TheWord/QueQiao) — Minecraft server connectivity
+- [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) (XTsat) — the upstream project; this repository is its independent AGPL-3.0 fork
 
 ### License
 
