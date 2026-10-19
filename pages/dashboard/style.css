@@ -2879,13 +2879,16 @@ body {
   flex-wrap: wrap;
 }
 
-/* 维度可展开下拉：开关按钮 + 绝对定位浮层列表（.hidden 带 !important，收起优先） */
-.map-dims {
+/* 可展开下拉（维度 / 玩家定位）：开关按钮 + 绝对定位浮层列表（.hidden 带
+   !important，收起优先）。浮层绝对定位不占布局位，对画布尺寸零影响（不闪烁） */
+.map-dims,
+.map-players {
   position: relative;
   display: inline-flex;
 }
 
-.map-dims-toggle {
+.map-dims-toggle,
+.map-players-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2899,7 +2902,8 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.map-dims-toggle:hover {
+.map-dims-toggle:hover,
+.map-players-toggle:hover {
   color: var(--text-primary);
 }
 
@@ -2908,7 +2912,8 @@ body {
   font-size: 10px;
 }
 
-.map-dim-list {
+.map-dim-list,
+.map-player-list {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -2923,7 +2928,14 @@ body {
   flex-direction: column;
 }
 
-.map-dim-option {
+/* 玩家清单可能较长：浮层内部滚动（滚动发生在浮层里，画布不受影响） */
+.map-player-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.map-dim-option,
+.map-player-option {
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -2936,14 +2948,32 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.map-dim-option:hover {
+.map-dim-option:hover,
+.map-player-option:hover {
   color: var(--text-primary);
   background: var(--bg-subtle);
 }
 
-.map-dim-option.active {
+.map-dim-option.active,
+.map-player-option.active {
   background: var(--accent);
   color: #fff;
+}
+
+/* 空清单占位项：不可点 */
+.map-player-option:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* 玩家定位开关文案：定宽上限 + 省略号——玩家名再长也不撑宽工具栏
+   （工具栏被撑到换行会改变画布高度 = 闪烁根源，同状态行定高教训） */
+#map-player-current-label {
+  display: inline-block;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .map-zoom {

@@ -12,6 +12,10 @@
  *        RGB 全 0 = 未探索（画暗色遮罩）；服务器不存在 404；dimension 非法 400
  *        无数据/禁用 → {server_name, dimension, updated_at, source:"none", reason,
  *        cell:{size:1,unit:"block"}, bbox:null, tiles:"", players:[]}：清屏 + 安装引导空态
+ *   GET  map/<server>/players → {server_name, updated_at, reason,
+ *           players:[{name,x,y,z,dimension,explored_radius}]}
+ *        （跨维度新鲜玩家清单：「定位玩家」下拉数据源；与 snapshot.players 同一新鲜度
+ *         标准；不依赖瓦片流——无调色板/瓦片也能定位；禁用时 players=[] + reason）
  *   POST map/<server>/teleport {player:"A", target:"B"} | {player:"A", x, z, y?}
  *        → {success, command, output, channel}；success=false 按失败在状态行提示
  * 面板显隐由 app.js activateServerTab 派发的 CustomEvent('queqiao:server-view-changed',
@@ -84,6 +88,10 @@ const state = {
   dimSig: '',                    // 维度清单签名：相同则零 DOM 重建（避免轮询期闪烁）
   prefDim: null,                 // 后端恢复的维度偏好（等它进入可选清单后再落地）
   dimTouched: false,     // 已从后端恢复或用户手动切过维度（恢复不再覆盖手动值）
+  mapPlayers: [],        // map/<server>/players 最近清单（跨维度新鲜玩家定位数据）
+  playerSig: '',         // 玩家清单签名（name+维度展示名）：相同则零 DOM 重建（防闪烁）
+  locatedPlayer: '',     // 最近选中的定位玩家（下拉开关文案 + 选项选中态）
+  centerOn: null,        // 待居中玩家名：进入其维度快照后居中一次即清空
   status: null,          // map/<server>/status 最近响应
   mapDisabled: false,    // 当前服务器 map_enabled=false：面板隐藏、轮询已停
   snapshot: null,        // 最近成功的 snapshot（原始对象）
@@ -285,6 +293,15 @@ function mergePlayers(snapshot) {
   }
   for (const name of Array.from(state.players.keys())) {
     if (!seen.has(name)) state.players.delete(name);
+  }
+  // 玩家定位：下拉选中的玩家出现在本维度快照后，一次性居中到其最新坐标
+  if (state.centerOn && seen.has(state.centerOn)) {
+    const target = state.players.get(state.centerOn);
+    if (target) {
+      state.centerX = target.toX;
+      state.centerZ = target.toZ;
+    }
+    state.centerOn = null;
   }
 }
 
@@ -538,16 +555,33 @@ async function fetchSnapshot() {
   }
 }
 
+/* 玩家定位清单：跨维度新鲜玩家（map/<server>/players），与当前快照维度无关。
+   失败静默保留旧清单——定位是辅助功能，不打断地图主流程也不写红色状态行 */
+async function fetchPlayers() {
+  if (!state.serverName) return;
+  const serverAtFetch = state.serverName;
+  try {
+    const resp = await apiGet(`map/${enc(serverAtFetch)}/players`);
+    if (state.serverName !== serverAtFetch) return; // 切服竞态：旧响应作废
+    state.mapPlayers = (resp && Array.isArray(resp.players)) ? resp.players : [];
+    renderPlayerOptions();
+  } catch (e) {
+    mapDbg('players fetch failed: ' + e.message);
+  }
+}
+
 function startPolling() {
   stopPolling();
   fetchStatus();
   fetchSnapshot();
+  fetchPlayers();
   state.pollTimer = setInterval(() => {
     if (document.hidden) return; // 页签不可见不轮询
     // status 同步轮询：mod 维度新增/数据源切换无需刷新页面即可反映（幂等，
     // 清单未变时不碰 DOM）
     fetchStatus();
     fetchSnapshot();
+    fetchPlayers();
   }, POLL_MS);
 }
 
@@ -786,6 +820,97 @@ function setDimsOpen(open) {
   toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
+/* ---------- 玩家定位下拉（与维度下拉同构：开关按钮 + 绝对定位浮层，
+   浮层不占布局位，对画布尺寸零影响） ---------- */
+function renderPlayerOptions() {
+  const list = el('map-player-list');
+  if (!list) return;
+  const rows = state.mapPlayers.map((p) => ({
+    name: p.name,
+    dimLabel: state.dimLabels[p.dimension] || p.dimension,
+  }));
+  const sig = rows.map((r) => r.name + ':' + r.dimLabel).join('|');
+  if (sig === state.playerSig) return; // 清单未变：不碰 DOM
+  state.playerSig = sig;
+  const frag = document.createDocumentFragment();
+  if (!rows.length) {
+    const opt = document.createElement('button');
+    opt.type = 'button';
+    opt.className = 'map-player-option';
+    opt.disabled = true;
+    opt.textContent = '当前没有在线玩家位置数据';
+    frag.appendChild(opt);
+  } else {
+    rows.forEach((r) => {
+      const opt = document.createElement('button');
+      opt.type = 'button';
+      opt.className = 'map-player-option';
+      opt.setAttribute('role', 'option');
+      opt.dataset.player = r.name;
+      opt.textContent = r.name + '（' + r.dimLabel + '）';
+      opt.addEventListener('click', () => {
+        locatePlayer(r.name);
+        setPlayersOpen(false);
+      });
+      frag.appendChild(opt);
+    });
+  }
+  list.replaceChildren(frag);
+  syncPlayerToggle();
+}
+
+/* 定位：跨维度时切到该玩家维度（applyDimension 重取快照），快照落地后由
+   mergePlayers 按 centerOn 居中一次——不先在旧维度画布上跳中心，避免跳动；
+   同维度直接用已知最新坐标居中。一次性动作，不写 panel_prefs（非持久偏好）。 */
+function locatePlayer(name) {
+  if (!name || !state.serverName) return;
+  const entry = state.mapPlayers.find((p) => p.name === name) || null;
+  state.locatedPlayer = name;
+  syncPlayerToggle();
+  const dim = entry && typeof entry.dimension === 'string' ? entry.dimension : '';
+  if (dim && dim !== state.dimension && state.dims.indexOf(dim) >= 0) {
+    state.centerOn = name;
+    applyDimension(dim);
+    return;
+  }
+  const known = state.players.get(name);
+  const x = known && Number.isFinite(known.curX) ? known.curX
+    : (entry ? Number(entry.x) : NaN);
+  const z = known && Number.isFinite(known.curZ) ? known.curZ
+    : (entry ? Number(entry.z) : NaN);
+  if (Number.isFinite(x) && Number.isFinite(z)) {
+    state.centerX = x;
+    state.centerZ = z;
+    state.centerOn = null;
+    requestDraw();
+  } else {
+    // 暂无坐标：等下一次该玩家进入快照时由 mergePlayers 居中
+    state.centerOn = name;
+  }
+}
+
+/* 开关文案与选项选中态幂等写入（玩家名定宽 + 省略号，防撑宽工具栏抖动画布） */
+function syncPlayerToggle() {
+  const label = el('map-player-current-label');
+  if (label) {
+    const want = state.locatedPlayer || '定位玩家';
+    if (label.textContent !== want) label.textContent = want;
+  }
+  document.querySelectorAll('#map-player-list .map-player-option').forEach((opt) => {
+    const active = opt.dataset.player === state.locatedPlayer;
+    opt.classList.toggle('active', active);
+    opt.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function setPlayersOpen(open) {
+  const list = el('map-player-list');
+  const toggle = el('map-players-toggle');
+  if (!list || !toggle) return;
+  list.classList.toggle('hidden', !open);
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 /* ---------- 视图联动（app.js activateServerTab 派发 queqiao:server-view-changed） ---------- */
 function setServer(serverName) {
   closeMenu();
@@ -816,6 +941,11 @@ function setServer(serverName) {
     // 服务器间 map_enabled 各自独立：切服先回显面板，由新的 status 响应决定是否再隐藏
     state.mapDisabled = false;
     state.players.clear();
+    state.mapPlayers = [];
+    state.playerSig = '';
+    state.locatedPlayer = '';
+    state.centerOn = null;
+    renderPlayerOptions();
     state.viewReady = false;
     setMapEmpty('正在加载地图…');
     setMapStatus('');
@@ -840,6 +970,7 @@ function bindCanvas() {
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     panning = { x: e.clientX, z: e.clientY };
+    state.centerOn = null; // 用户手动接管视图：放弃尚未生效的定位居中
     canvas.setPointerCapture(e.pointerId);
     wrap.classList.add('panning');
   });
@@ -918,13 +1049,25 @@ function bindToolbar() {
       setDimsOpen(false);
     });
   });
+  // 玩家定位下拉：开合切换；打开时立即补拉一次最新位置（不等下一轮轮询）
+  el('map-players-toggle')?.addEventListener('click', () => {
+    const list = el('map-player-list');
+    const open = !!list && list.classList.contains('hidden');
+    setPlayersOpen(open);
+    if (open && state.serverName) fetchPlayers();
+  });
   // 外点关闭（mousedown 早于选项 click，容器内点击不受影响）与 Esc 关闭
   document.addEventListener('mousedown', (e) => {
     const wrap = el('map-dims');
     if (wrap && !wrap.contains(e.target)) setDimsOpen(false);
+    const pWrap = el('map-players');
+    if (pWrap && !pWrap.contains(e.target)) setPlayersOpen(false);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') setDimsOpen(false);
+    if (e.key === 'Escape') {
+      setDimsOpen(false);
+      setPlayersOpen(false);
+    }
   });
   const canvas = el('map-canvas');
   el('map-zoom-in')?.addEventListener('click', () => {
@@ -939,7 +1082,7 @@ function bindToolbar() {
     if (state.snapshot) { fitView(); requestDraw(); }
   });
   el('map-refresh')?.addEventListener('click', () => {
-    if (state.serverName) { fetchStatus(); fetchSnapshot(); }
+    if (state.serverName) { fetchStatus(); fetchSnapshot(); fetchPlayers(); }
   });
   window.addEventListener('resize', resizeCanvas);
   // 捕获阶段监听所有滚动：菜单自身是 overflow-y:auto 容器，其内部滚动是正常浏览行为，

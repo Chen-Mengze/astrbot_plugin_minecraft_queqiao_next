@@ -318,7 +318,7 @@
     </section>
 
     <!-- 方块地图面板（map-view.js）：canvas 瓦片渲染 + 拖拽平移/滚轮缩放 + 可展开下拉维度切换 +
-         右键自绘传送菜单。数据来自后端 MapService（map/<server>/status、snapshot、teleport）：
+         玩家定位下拉 + 右键自绘传送菜单。数据来自后端 MapService（map/<server>/status、snapshot、players、teleport）：
          真实数据由服务端 QueQiao-Map-Web mod 经鹊桥推送；无真实数据时显示安装引导空态（source:"none"），
          该服务器 map_enabled=false 时隐藏整个面板并停止轮询；维度用可展开下拉切换；
          map_dimension 偏好走后端 panel_prefs 持久化（AGENTS §4.7）。
@@ -338,6 +338,10 @@
             <button type="button" class="map-dim-option" role="option" data-dim="nether">下界</button>
             <button type="button" class="map-dim-option" role="option" data-dim="the_end">末地</button>
           </div>
+        </div>
+        <div class="map-players" id="map-players">
+          <button type="button" class="map-players-toggle" id="map-players-toggle" aria-haspopup="listbox" aria-expanded="false" title="定位玩家：选中后切换到该玩家所在维度并居中"><span id="map-player-current-label">定位玩家</span><span class="map-dims-caret">▾</span></button>
+          <div class="map-player-list hidden" id="map-player-list" role="listbox" aria-label="定位玩家"></div>
         </div>
         <span class="map-spacer"></span>
         <div class="map-zoom" role="group" aria-label="地图缩放">

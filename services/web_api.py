@@ -382,6 +382,12 @@ class WebApiController:
                         ["POST"],
                         "地图传送玩家（传送到玩家或坐标；指令只发送一次不重发）",
                     ),
+                    (
+                        "/map/<server_name>/players",
+                        self.get_map_players,
+                        ["GET"],
+                        "获取某台服务器跨维度新鲜玩家位置清单（前端玩家定位下拉数据源）",
+                    ),
                 ]
             )
 
@@ -2154,6 +2160,14 @@ class WebApiController:
                 status_code=400,
             )
         return json_response(snapshot)
+
+    async def get_map_players(self, server_name: str) -> Any:
+        """跨维度新鲜玩家位置清单（地图面板「定位玩家」下拉的数据源）。"""
+        if self.map_service is None:
+            return error_response("方块地图服务未接入", status_code=503)
+        if server_name not in self.configs and self.server_manager.get(server_name) is None:
+            return error_response(f"服务器不存在: {server_name}", status_code=404)
+        return json_response(self.map_service.players(server_name))
 
     async def teleport_map_player(self, server_name: str) -> Any:
         """地图传送：{"player": "A", "target": "B"} 或 {"player": "A", "x":, "z":, "y" 可选}。

@@ -6162,12 +6162,13 @@ _wac52 = _WAC52(
     None, None, None, None, _ms52,
 )
 _wac52.register_routes()
-assert len(_ctx52.routes) == 34, f"31 基础 + 3 地图路由, 实际 {len(_ctx52.routes)}"
+assert len(_ctx52.routes) == 35, f"31 基础 + 4 地图路由, 实际 {len(_ctx52.routes)}"
 _rp52 = [r[0] for r in _ctx52.routes]
 for _p52 in (
     "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/status",
     "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/snapshot",
     "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/teleport",
+    "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/players",
 ):
     assert _p52 in _rp52, _p52
 
@@ -6183,6 +6184,17 @@ assert asyncio.run(_wac52.get_map_status("Nope"))["status_code"] == 404
 assert asyncio.run(_wac52.get_map_status("Srv52off"))["status_code"] == 200, (
     "未连接服务器也应返回无数据状态"
 )
+_res52p = asyncio.run(_wac52.get_map_players("Srv52"))
+assert _res52p["status_code"] == 200
+assert set(_res52p["data"].keys()) == {
+    "server_name", "updated_at", "reason", "players"}, "players 契约四字段"
+assert _res52p["data"]["players"] == [] and _res52p["data"]["reason"] == "", (
+    "未收到 player_move 时定位清单为空态")
+assert asyncio.run(_wac52.get_map_players("Nope"))["status_code"] == 404
+_ms52.set_enabled("Srv52", False)
+assert asyncio.run(_wac52.get_map_players("Srv52"))["data"]["reason"] == _MDR52, (
+    "禁用后 players 引用 MAP_DISABLED_REASON")
+_ms52.set_enabled("Srv52", True)
 
 _wa52.request.query = {"dimension": "nether"}
 _res52n = asyncio.run(_wac52.get_map_snapshot("Srv52"))
@@ -6724,3 +6736,109 @@ assert sum(_plugin54.metrics.events_by_type.values()) == 2, (
 print("OK  MAP_EVENT_SUB_TYPES 恰为四类常量 / 四类事件走 _on_queqiao_event 被 "
       "map_service 消费且不进终端日志·转发·指标 / 聊天对照事件链路不受影响 / "
       "map_enabled=false：地图事件不消费但仍被拦截 / SOFT_CONFIG_KEYS 含 map_enabled 守卫")
+
+# ============================================================
+# 55. 方块地图玩家定位清单（MapService.players 跨维度 + Web API 冒烟）
+# ============================================================
+print("\n=== 55. 方块地图玩家定位：players() 跨维度清单 / 新鲜度 / 禁用空态 ===")
+from astrbot_plugin_minecraft_queqiao_next.services.map_service import (
+    MapService as _MS55,
+)
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
+    MAP_DIMENSIONS as _MDIMS55,
+    MAP_DISABLED_REASON as _MDR55,
+    MAP_PLAYER_STALE_SECONDS as _MPS55,
+    MAP_REGISTRY_DIM_SHORT as _MRDS55,
+    MAP_SUB_PLAYER_MOVE as _MSPm55,
+)
+import time as _time55
+
+_OW55, _NE55, _TE55 = _MDIMS55
+_RDIM55 = {v: k for k, v in _MRDS55.items()}  # 短名 → registry 维度名
+
+
+def _ev55(sub_type, **data):
+    """地图 notice 事件（与 _ev53 同款；55 组自持不依赖组间变量）。"""
+    return QueQiaoEvent.from_dict({
+        "post_type": "notice", "event_name": "QueQiaoServerNoticeEvent",
+        "sub_type": sub_type, **data,
+    })
+
+
+_ms55 = _MS55()
+_srv55 = "Srv55"
+
+# ---- (a) 定位不依赖瓦片流：仅 player_move（无调色板 / 无瓦片）也能列清单 ----
+assert _ms55.handle_event(_srv55, _ev55(_MSPm55, players=[
+    {"uuid": "u-al", "nickname": "Alice", "x": 10.5, "y": 64.0, "z": 20.25,
+     "dimension": _RDIM55[_OW55]},
+    {"uuid": "u-bo", "nickname": "Bob", "x": -5.0, "y": 12.0, "z": 7.5,
+     "dimension": _RDIM55[_NE55]},
+    {"uuid": "u-ca", "nickname": "Cara", "x": 100.0, "y": 30.0, "z": -200.0,
+     "dimension": "custom:galaxy"},
+])) is True
+_pl55 = _ms55.players(_srv55)
+assert set(_pl55.keys()) == {"server_name", "updated_at", "reason", "players"}, (
+    "players 契约四字段")
+assert _pl55["reason"] == ""
+assert [p["name"] for p in _pl55["players"]] == ["Alice", "Bob", "Cara"], (
+    "跨维度清单按 name 排序（前端签名比对要求顺序稳定）")
+assert {p["dimension"] for p in _pl55["players"]} == {_OW55, _NE55, "galaxy"}, (
+    "清单跨全部维度；player_move 登记的 mod 维度带面板短名")
+assert set(_pl55["players"][0].keys()) == {
+    "name", "x", "y", "z", "dimension", "explored_radius"}, (
+    "条目字段与 snapshot players 同构（复用 _snapshot_players）")
+assert (_pl55["players"][0]["x"], _pl55["players"][0]["z"]) == (10.5, 20.25)
+
+# ---- (b) 新鲜度与快照同一标准：超 MAP_PLAYER_STALE_SECONDS 缺席 ----
+_t55 = _time55.time()
+assert [p["name"] for p in
+        _ms55.players(_srv55, at=_t55 + _MPS55 - 0.5)["players"]] == [
+    "Alice", "Bob", "Cara"]
+assert _ms55.players(_srv55, at=_t55 + _MPS55 + 0.5)["players"] == [], (
+    "超 MAP_PLAYER_STALE_SECONDS 的玩家缺席（与快照同一标准）")
+
+# ---- (c) upsert 原位刷新位置与时间戳（不新增条目） ----
+_ts55 = _ms55._states[_srv55].players["u-al"]["updated_at"]
+assert _ms55.handle_event(_srv55, _ev55(_MSPm55, players=[
+    {"uuid": "u-al", "nickname": "Alice", "x": 11.5, "y": 64.0, "z": 21.25,
+     "dimension": _RDIM55[_OW55]}])) is True
+assert _ms55._states[_srv55].players["u-al"]["updated_at"] >= _ts55, (
+    "upsert 应刷新 updated_at（定位拿到的永远是最新上报）")
+_pl55b = _ms55.players(_srv55)["players"]
+assert [p["name"] for p in _pl55b] == ["Alice", "Bob", "Cara"], (
+    "upsert 不产生重复条目")
+_al55 = _pl55b[0]
+assert (_al55["x"], _al55["z"]) == (11.5, 21.25), "upsert 原位更新位置"
+
+# ---- (d) 无状态服务器与禁用：空清单空态（不报错） ----
+assert _MS55().players("Nothing55", at=1000.0) == {
+    "server_name": "Nothing55", "updated_at": 1000.0, "reason": "", "players": [],
+}, "无任何状态的服务器返回空清单而非报错"
+_ms55.set_enabled(_srv55, False)
+_off55 = _ms55.players(_srv55)
+assert _off55["players"] == [] and _off55["reason"] == _MDR55, (
+    "功能关闭 ⇒ 空清单 + MAP_DISABLED_REASON")
+_ms55.set_enabled(_srv55, True)
+assert [p["name"] for p in _ms55.players(_srv55)["players"]] == [
+    "Alice", "Bob", "Cara"], "重新启用后状态恢复"
+
+# ---- (e) Web API 冒烟：get_map_players 200 / 404 ----
+_ctx55 = types.SimpleNamespace(routes=[], register_web_api=lambda p, h, m, d: None)
+_sm55 = types.SimpleNamespace(get=lambda name: None)
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import (
+    WebApiController as _WAC55,
+)
+_wac55 = _WAC55(
+    _ctx55, _sm55, None, None, None, {_srv55: None},
+    None, None, None, None, _ms55,
+)
+_res55 = asyncio.run(_wac55.get_map_players(_srv55))
+assert _res55["status_code"] == 200 and [
+    p["name"] for p in _res55["data"]["players"]] == ["Alice", "Bob", "Cara"]
+assert asyncio.run(_wac55.get_map_players("Nope55"))["status_code"] == 404
+
+print("OK  players() 跨维度定位清单：仅 player_move（无调色板/瓦片）可定位 / "
+      "按 name 排序 / 字段与 snapshot players 同构 / mod 维度短名 / "
+      "新鲜度与快照同标准 / upsert 刷新时间戳 / 无状态与禁用空态 / "
+      "Web API GET map/<server>/players 注册 + 200/404")

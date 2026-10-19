@@ -278,17 +278,19 @@ SecurityError**，不是返回空——任何「try/catch 包一下就能用」�
 - 同一服务器视图重复激活（`renderServerTabs` 每 tick 调 `activateServerTab`）不得重启轮询定时器
 - 维度下拉由 `status.dimensions` + `status.dimension_names` 驱动（`applyDimensions()`），
   清单未变化时零 DOM 操作；当前维度被移除时回落主世界
+- 玩家定位下拉与维度下拉同款「签名化零重建」（数据源 `GET map/<server>/players` 跨维度清单，按 name 排序保证签名稳定；开关与选项文案必须定宽 + 省略号——标签变宽撑换行工具栏同样会抖画布）
 
 ### 4.10 自检
 
-改动纯逻辑后运行 `python3 tests_offline.py`（54 组断言，覆盖配置解析、事件模型、
+改动纯逻辑后运行 `python3 tests_offline.py`（55 组断言，覆盖配置解析、事件模型、
 转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、
 端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、
 conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、
 会话 UMO 归一/隔离对话同群全成员匹配、目标会话去重、自消息与重复投递拦截、
 `mc target` 免 UMO 绑定、方块地图无数据契约与 API、zlib-pal8 解码/sha1 去重/
 调色板换 id 与换色清瓦片/纯黑夹紧/快照 revision/模组维度动态登记与持久化、
-地图事件旁路消费与 `map_enabled` 门控、前端动态维度与状态行定高守卫）。
+地图事件旁路消费与 `map_enabled` 门控、前端动态维度与状态行定高守卫、
+方块地图跨维度玩家清单 `players()`（仅 player_move 可定位 / 新鲜度 / 禁用空态 / Web API 冒烟）。
 
 ---
 

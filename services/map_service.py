@@ -710,6 +710,39 @@ class MapService:
             "players": [],
         }
 
+    def players(self, server_name: str, at: float | None = None) -> dict[str, Any]:
+        """跨维度新鲜玩家位置清单（前端「定位玩家」下拉的唯一数据源）。
+
+        snapshot.players 只含被请求维度的玩家——本方法跨全部维度列清单，
+        玩家在其他维度也能被选中并跳转定位。新鲜度与快照同一标准（超过
+        MAP_PLAYER_STALE_SECONDS 即缺席）；且不依赖瓦片流：无调色板 / 无
+        瓦片时只要有 player_move 就能定位。功能关闭 ⇒ 空清单 +
+        MAP_DISABLED_REASON。按 name 排序：前端以签名比对避免 DOM 重建，
+        清单顺序必须稳定。「at」为显式参考时间（秒，测试/复现用），
+        与 snapshot 同款语义。
+        """
+        st = self._lookup(server_name)
+        now = time.time() if at is None else float(at)
+        if server_name in self._disabled:
+            return {
+                "server_name": server_name,
+                "updated_at": now,
+                "reason": MAP_DISABLED_REASON,
+                "players": [],
+            }
+        fresh = [
+            p
+            for p in (st.players.values() if st is not None else ())
+            if now - p["updated_at"] <= MAP_PLAYER_STALE_SECONDS
+        ]
+        fresh.sort(key=lambda p: p["name"])
+        return {
+            "server_name": server_name,
+            "updated_at": st.last_event_at if st is not None else now,
+            "reason": "",
+            "players": self._snapshot_players(fresh),
+        }
+
     def flush(self) -> None:
         """立即落盘全部脏状态（main terminate 接线调用）。"""
         if self._data_dir is None:
