@@ -32,6 +32,7 @@ from .constants import (
     HEADER_AUTHORIZATION,
     HEADER_CLIENT_ORIGIN,
     HEADER_SELF_NAME,
+    MAP_EVENT_SUB_TYPES,
     MAX_RECONNECT_WAIT,
     PING_INTERVAL,
     PING_TIMEOUT,
@@ -251,6 +252,8 @@ class QueQiaoClient:
 
         # echo -> Future，用于把 API 响应投递给等待者
         self._pending: dict[str, asyncio.Future] = {}
+        # 已告警过的信封 sub_type（避免逐事件刷屏）
+        self._warned_envelope_sub_types: set[str] = set()
 
     # ---- 状态 ----
 
@@ -537,7 +540,31 @@ class QueQiaoClient:
                         f"[{PLUGIN_NAME}][{self.server_name}] 事件处理异常 "
                         f"({event.event_name}): {exc}"
                     )
-        elif post_type != POST_TYPE_RESPONSE:
+        elif post_type == POST_TYPE_RESPONSE:
+            # 迟到/无 echo 的 API 回执：无等待者，直接忽略（不当作事件）
+            return
+        elif data.get("sub_type") in MAP_EVENT_SUB_TYPES:
+            # 信封 post_type 不是 message/notice，但载荷是已知地图事件：直接投递，
+            # 避免上游信封变更导致地图数据被静默丢弃（每类只告警一次）
+            sub_type = str(data.get("sub_type"))
+            if sub_type not in self._warned_envelope_sub_types:
+                self._warned_envelope_sub_types.add(sub_type)
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{self.server_name}] 地图事件 {sub_type!r}"
+                    f" 的信封 post_type={post_type!r} 不符预期"
+                    "（应为 message/notice），已按事件投递；"
+                    "请检查鹊桥及其地图扩展版本"
+                )
+            event = QueQiaoEvent.from_dict(data)
+            if self.on_event:
+                try:
+                    await self.on_event(event)
+                except Exception as exc:
+                    logger.error(
+                        f"[{PLUGIN_NAME}][{self.server_name}] 事件处理异常 "
+                        f"({event.event_name}): {exc}"
+                    )
+        else:
             logger.debug(f"[{PLUGIN_NAME}][{self.server_name}] 忽略未知消息: {raw[:200]}")
 
     def _resolve_pending(self, data: dict) -> bool:

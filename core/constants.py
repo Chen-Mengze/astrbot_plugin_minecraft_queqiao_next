@@ -3,6 +3,8 @@
 本模块位于依赖链最底层，不得 import 本插件其它模块。
 """
 
+import re
+
 PLUGIN_NAME = "astrbot_plugin_minecraft_queqiao_next"
 PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao_next"
 
@@ -177,9 +179,11 @@ MONITOR_API_TIMEOUT = 5
 # 无真实流时不提供任何演示数据：快照 source 为 none（无数据/已关闭各有
 # 说明文案，见 MAP_NO_DATA_REASON / MAP_DISABLED_REASON），面板按此展示
 # 空态或隐藏。每台服务器由 map_enabled 开关控制（默认开）。
-# 维度为白名单（URL query / 面板偏好 map_dimension 均按 MAP_DIMENSIONS
-# 校验），中文名映射供前端展示。自定义维度按事件动态登记（见
-# MAP_REGISTRY_DIM_SHORT）。
+# 维度分两类：MAP_DIMENSIONS 是三个原版维度的稳定短名（面板偏好
+# map_dimension 的默认页签、快照 URL 的合法性下限）；服务端上报的模组
+# 维度由 MapService 按 MAP_REGISTRY_DIM_SHORT 未命中的 registry key 动态
+# 登记短名（见 map_service.MapService._dim_short），随 status.dimensions
+# 一起下发给前端生成维度页签。
 MAP_DIMENSIONS: tuple[str, ...] = ("overworld", "nether", "the_end")
 MAP_DEFAULT_DIMENSION = "overworld"
 MAP_DIMENSION_NAMES: dict[str, str] = {
@@ -208,7 +212,7 @@ MAP_SOURCE_NONE = "none"
 # source=none 的两种说明：未收到真实事件 vs 功能开关关闭
 MAP_NO_DATA_REASON = (
     "尚未收到该服务器的地图事件：需服务端安装 QueQiao-Map-Web mod 并在 "
-    "config/queqiao-mapext.yml 设 enabled: true"
+    "config/QueQiao/queqiao_map_web.yml 设 enabled: true（默认 false）"
 )
 MAP_DISABLED_REASON = "方块地图功能已关闭（配置 map_enabled=false）"
 # map_tile 载荷的瓦片编码格式：调色板索引位图经 zlib 压缩
@@ -222,6 +226,13 @@ MAP_REGISTRY_DIM_SHORT: dict[str, str] = {
     "minecraft:the_nether": "nether",
     "minecraft:the_end": "the_end",
 }
+# 模组维度动态登记上限（每台服务器独立计数）：防止异常上报把维度页签撑爆
+MAP_DYNAMIC_DIMENSIONS_MAX = 24
+# registry 维度键的合法形态（namespace:path）；不匹配 ⇒ 无法映射，整批瓦片忽略
+MAP_REGISTRY_KEY_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
+# 维度短名形态（内部短名 / 面板偏好 map_dimension 的校验）：小写字母数字
+# 与 _-，长度受限。模组维度短名由 registry path 清洗得来，必然落在此形态内
+MAP_DIM_SHORT_RE = re.compile(r"^[a-z0-9_-]{1,48}$")
 
 
 def prefix_matches(prefix: str, text: str) -> bool:

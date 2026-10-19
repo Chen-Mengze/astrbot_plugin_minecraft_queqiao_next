@@ -56,11 +56,15 @@ from astrbot.api import logger
 
 from ..core.constants import (
     MAP_DEFAULT_DIMENSION,
+    MAP_DIMENSION_NAMES,
     MAP_DIMENSIONS,
+    MAP_DIM_SHORT_RE,
     MAP_DISABLED_REASON,
+    MAP_DYNAMIC_DIMENSIONS_MAX,
     MAP_NO_DATA_REASON,
     MAP_PLAYER_STALE_SECONDS,
     MAP_REGISTRY_DIM_SHORT,
+    MAP_REGISTRY_KEY_RE,
     MAP_SOURCE_NONE,
     MAP_SOURCE_REAL,
     MAP_SUB_DIMENSIONS,
@@ -95,6 +99,9 @@ MAP_FLUSH_MIN_INTERVAL_SECONDS = 5.0
 
 # 调色板单项：#RRGGBB（大小写均可）
 _HEX6_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+# (0,0,0) 是「未探索/未覆盖」的占位色：调色板里合法的纯黑项抬 1 个蓝分量，
+# 使真实纯黑区域不会被前端渲染成未探索雾（肉眼几乎无差别）
+_BLACK_FIX = (0, 0, 1)
 # server_name 转安全文件名：与 services/monitor.py::MonitorStore 同一写法
 # （刻意复制而非 import monitor——避免把 monitor 的重依赖链拉进地图模块）
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
@@ -149,6 +156,9 @@ class _ServerMapState:
         self.dim_updated_at: dict[str, float] = {}
         # map_dimensions 上报的 registry key 集合（清单重发即整体替换）
         self.reported_dimensions: set[str] = set()
+        # 模组维度动态短名：registry key -> 内部短名（插入序 = 页签顺序），
+        # 由 map_dimensions / map_tile / player_move 里的未知 registry key 登记
+        self.dyn_dims: dict[str, str] = {}
         # 玩家：key=uuid（缺失退 nickname）→ {name,x,y,z,dimension,updated_at}
         self.players: dict[str, dict[str, Any]] = {}
         self.last_event_at: float = 0.0
@@ -270,10 +280,81 @@ class MapService:
             st.dirty = True
         return now
 
+    # ---- 维度映射（内置别名 + 模组维度动态登记） ----
+
+    @staticmethod
+    def _known_short(st: _ServerMapState, registry_key: Any) -> str | None:
+        """registry key → 已登记短名（内置别名优先）；不登记、不告警。"""
+        if not isinstance(registry_key, str):
+            return None
+        known = MAP_REGISTRY_DIM_SHORT.get(registry_key)
+        if known:
+            return known
+        return st.dyn_dims.get(registry_key)
+
+    def _dim_short(
+        self, server_name: str, st: _ServerMapState, registry_key: Any
+    ) -> str | None:
+        """registry key → 面板短名；未知命名空间按需动态登记。
+
+        内置三维度走 MAP_REGISTRY_DIM_SHORT；其余形如 namespace:path 的
+        registry key 以 path 清洗成短名登记（与内置/已登记短名冲突时拼命名
+        空间或补序号），每台上限 MAP_DYNAMIC_DIMENSIONS_MAX（防页签被撑爆）。
+        非法形态或超上限返回 None，调用方按「无法映射」忽略并告警一次。
+        """
+        known = self._known_short(st, registry_key)
+        if known:
+            return known
+        if not isinstance(registry_key, str) or not MAP_REGISTRY_KEY_RE.match(
+            registry_key
+        ):
+            return None
+        namespace, _, path = registry_key.partition(":")
+        base = re.sub(r"[^a-z0-9_-]+", "_", path.lower()).strip("_")[:32]
+        if not base:
+            return None
+        if len(st.dyn_dims) >= MAP_DYNAMIC_DIMENSIONS_MAX:
+            if registry_key not in st.warned_dims:
+                st.warned_dims.add(registry_key)
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] 模组维度数已达上限"
+                    f" {MAP_DYNAMIC_DIMENSIONS_MAX}，{registry_key!r} 及其数据被忽略"
+                )
+            return None
+        taken = set(MAP_DIMENSIONS) | set(st.dyn_dims.values())
+        short = base
+        if short in taken:
+            short = re.sub(
+                r"[^a-z0-9_-]+", "_", f"{namespace}_{base}".lower()
+            ).strip("_")[:40]
+        serial = 2
+        while short in taken:
+            short = f"{base[:40]}_{serial}"
+            serial += 1
+        st.dyn_dims[registry_key] = short
+        logger.info(
+            f"[{PLUGIN_NAME}][{server_name}] 登记模组维度 {registry_key!r}"
+            f" → 面板短名 {short!r}"
+        )
+        return short
+
+    def _warn_unmapped_dim(
+        self, server_name: str, st: _ServerMapState, dim_raw: Any
+    ) -> None:
+        """无法映射的维度：每维度只告警一次（不建立瓦片，仅刷新时间戳）。"""
+        shown = dim_raw if isinstance(dim_raw, str) else repr(dim_raw)
+        if shown not in st.warned_dims:
+            st.warned_dims.add(shown)
+            logger.warning(
+                f"[{PLUGIN_NAME}][{server_name}] 无法映射的维度 {shown!r}"
+                " 的瓦片已忽略（每维度只告警一次）"
+            )
+        self._touch(st, dirty=False)
+
     # ---- 四类事件的解析落地 ----
 
     def _apply_dimensions(self, server_name: str, payload: dict[str, Any]) -> None:
-        """map_dimensions：整体替换上报维度清单，无法映射的只告警一次。"""
+        """map_dimensions：整体替换上报维度清单，模组维度按需登记短名。"""
         dims = payload.get("dimensions")
         if not isinstance(dims, list):
             logger.warning(
@@ -281,16 +362,17 @@ class MapService:
                 " dimensions 或非列表，忽略"
             )
             return
-        reported: set[str] = {d for d in dims if isinstance(d, str) and d}
         st = self._state(server_name)
+        reported: set[str] = set()
+        for d in dims:
+            if not isinstance(d, str) or not d:
+                continue
+            reported.add(d)
+            if self._known_short(st, d) is not None:
+                continue
+            if self._dim_short(server_name, st, d) is None:
+                self._warn_unmapped_dim(server_name, st, d)
         st.reported_dimensions = reported
-        for d in reported:
-            if d not in MAP_REGISTRY_DIM_SHORT and d not in st.warned_dims:
-                st.warned_dims.add(d)
-                logger.warning(
-                    f"[{PLUGIN_NAME}][{server_name}] 上报维度 {d!r} 无法映射到"
-                    "面板维度（overworld/nether/the_end），该维度数据将被忽略"
-                )
         self._touch(st)
         self._maybe_flush(server_name, st)
 
@@ -299,8 +381,9 @@ class MapService:
 
         - 非法色项 ⇒ 整盘拒绝并告警（宁缺勿错色）；
         - 超过 256 项 ⇒ 截断保留前 256 并告警；
-        - 新 id ⇒ 替换调色板并清空该服务器全部已存瓦片（旧瓦片按旧调色板
-          量化，混用会错色），并 bump 各维度 revision 使快照缓存失效。
+        - id 变化**或颜色内容变化**（部分实现 id 为空/固定）⇒ 替换调色板并清空
+          该服务器全部已存瓦片（旧瓦片按旧调色板量化，混用会错色），并 bump
+          各维度 revision 使快照缓存失效。
         """
         pid = payload.get("id")
         pid = pid if isinstance(pid, str) else ""
@@ -327,7 +410,10 @@ class MapService:
                 return
             parsed.append((int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)))
         st = self._state(server_name)
-        if pid != st.palette_id:
+        # 颜色内容变化同样必须换盘：部分实现 palette id 为空或不修订，
+        # 只认 id 会让新旧量化混用而错色。
+        colors_changed = parsed != st.palette_colors
+        if pid != st.palette_id or colors_changed:
             stale = len(st.tiles)
             if stale:
                 # 旧瓦片按旧调色板量化，必须整服清空
@@ -339,6 +425,7 @@ class MapService:
             logger.info(
                 f"[{PLUGIN_NAME}][{server_name}] 收到调色板"
                 f"（{st.palette_id or '无'} → {pid or '?'}），清空旧瓦片 {stale} 片"
+                + ("（颜色内容变化）" if colors_changed else "")
             )
         st.palette_id = pid
         st.palette_colors = parsed
@@ -349,7 +436,8 @@ class MapService:
     def _apply_tile(self, server_name: str, payload: dict[str, Any]) -> None:
         """map_tile：解码校验 zlib-pal8 瓦片，sha1 去重后按位置键覆盖写。
 
-        - 维度无法映射 ⇒ 忽略整批，每 (server, dimension) 只告警一次；
+        - 维度为内置短名或模组维度（未知 registry key 首次出现即登记短名）；
+          非法形态 ⇒ 忽略整批，每 (server, dimension) 只告警一次；
         - 调色板未到 ⇒ 丢弃整批并告警（上游保证 palette 先于 tile；AstrBot
           侧重启场景由磁盘持久化兜底）；
         - format 非 MAP_TILE_FORMAT ⇒ 跳过该瓦片并告警（新编码会用新 format 串）；
@@ -359,19 +447,10 @@ class MapService:
         - 按位置键覆盖写幂等（重连可能重放同一批瓦片）。
         """
         dim_raw = payload.get("dimension")
-        dim = (
-            MAP_REGISTRY_DIM_SHORT.get(dim_raw) if isinstance(dim_raw, str) else None
-        )
+        st = self._state(server_name)
+        dim = self._dim_short(server_name, st, dim_raw)
         if dim is None:
-            shown = dim_raw if isinstance(dim_raw, str) else repr(dim_raw)
-            st = self._state(server_name)
-            if shown not in st.warned_dims:
-                st.warned_dims.add(shown)
-                logger.warning(
-                    f"[{PLUGIN_NAME}][{server_name}] 无法映射的维度 {shown!r}"
-                    " 的瓦片已忽略（每维度只告警一次）"
-                )
-            self._touch(st, dirty=False)
+            self._warn_unmapped_dim(server_name, st, dim_raw)
             return
         tiles = payload.get("tiles")
         if not isinstance(tiles, list):
@@ -380,7 +459,6 @@ class MapService:
                 " 或非列表，忽略"
             )
             return
-        st = self._state(server_name)
         if not st.palette_colors:
             logger.warning(
                 f"[{PLUGIN_NAME}][{server_name}] 调色板尚未收到，丢弃本次"
@@ -527,11 +605,10 @@ class MapService:
                 )
                 continue
             dim_raw = item.get("dimension")
-            dim = (
-                MAP_REGISTRY_DIM_SHORT.get(dim_raw)
-                if isinstance(dim_raw, str)
-                else None
-            ) or (dim_raw if isinstance(dim_raw, str) else "")
+            # 内置维度映射短名；模组维度首次出现即登记；非法形态退原文
+            dim = self._dim_short(server_name, st, dim_raw) or (
+                dim_raw if isinstance(dim_raw, str) else ""
+            )
             st.players[uuid or nickname] = {
                 "name": nickname or uuid,
                 "x": x,
@@ -551,24 +628,31 @@ class MapService:
         map_enabled=false ⇒ source=none + MAP_DISABLED_REASON；
         收到过调色板且至少存过 1 片瓦片 ⇒ 真实流（source=MAP_SOURCE_REAL）；
         其余（未收到真实事件）⇒ source=none + MAP_NO_DATA_REASON。
+
+        dimensions 恒为「内置三维度 + 已登记模组维度」（前端据此生成页签），
+        dimension_names 给短名到展示名的映射。
         """
+        st = self._lookup(server_name)
+        dims = list(MAP_DIMENSIONS) if st is None else self._mapped_dimensions(st)
+        names = self._dimension_names(st)
         if server_name in self._disabled:
             return {
                 "server_name": server_name,
                 "enabled": False,
                 "source": MAP_SOURCE_NONE,
                 "reason": MAP_DISABLED_REASON,
-                "dimensions": list(MAP_DIMENSIONS),
+                "dimensions": dims,
+                "dimension_names": names,
                 "updated_at": time.time(),
             }
-        st = self._lookup(server_name)
         if st is not None and st.palette_colors and st.ever_tile:
             return {
                 "server_name": server_name,
                 "enabled": True,
                 "source": MAP_SOURCE_REAL,
                 "reason": "",
-                "dimensions": self._mapped_dimensions(st),
+                "dimensions": dims,
+                "dimension_names": names,
                 "updated_at": st.last_event_at,
             }
         return {
@@ -576,7 +660,8 @@ class MapService:
             "enabled": True,
             "source": MAP_SOURCE_NONE,
             "reason": MAP_NO_DATA_REASON,
-            "dimensions": list(MAP_DIMENSIONS),
+            "dimensions": dims,
+            "dimension_names": names,
             "updated_at": time.time(),
         }
 
@@ -592,14 +677,17 @@ class MapService:
         真实流按瓦片合成。「at」为显式参考时间（秒，测试/复现用），缺省取
         当前时间；真实流下它同时作为玩家新鲜度判定基准。
         """
-        if dimension not in MAP_DIMENSIONS:
+        st = self._lookup(server_name)
+        known = dimension in MAP_DIMENSIONS or (
+            st is not None and dimension in st.dyn_dims.values()
+        )
+        if not known:
             return None
         now = time.time() if at is None else float(at)
         if server_name in self._disabled:
             return self._none_snapshot(
                 server_name, dimension, now, MAP_DISABLED_REASON
             )
-        st = self._lookup(server_name)
         if st is not None and st.palette_colors and st.ever_tile:
             return self._real_snapshot(server_name, st, dimension, now)
         return self._none_snapshot(server_name, dimension, now, MAP_NO_DATA_REASON)
@@ -614,6 +702,8 @@ class MapService:
             "updated_at": now,
             "source": MAP_SOURCE_NONE,
             "reason": reason,
+            # revision 恒 0：无数据态指纹稳定，前端可跳过重解码
+            "revision": 0,
             "cell": {"size": 1, "unit": "block"},
             "bbox": None,
             "tiles": "",
@@ -631,16 +721,43 @@ class MapService:
 
     # ---- 真实快照合成 ----
 
-    def _mapped_dimensions(self, st: _ServerMapState) -> list[str]:
-        """已上报维度映射为短名并按 MAP_DIMENSIONS 顺序去重；未上报给全量。"""
-        if not st.reported_dimensions:
+    @staticmethod
+    def _dimension_names(st: _ServerMapState | None) -> dict[str, str]:
+        """面板维度短名 → 展示名：内置中文名 + 模组维度用其 registry key。"""
+        names = dict(MAP_DIMENSION_NAMES)
+        if st is not None:
+            for key, short in st.dyn_dims.items():
+                names.setdefault(short, key)
+        return names
+
+    def known_dimensions(self, server_name: str) -> list[str]:
+        """该服务器当前合法的面板维度短名（内置 + 已登记模组），供控制层提示。"""
+        st = self._lookup(server_name)
+        if st is None:
             return list(MAP_DIMENSIONS)
-        shorts = {
-            MAP_REGISTRY_DIM_SHORT[d]
-            for d in st.reported_dimensions
-            if d in MAP_REGISTRY_DIM_SHORT
-        }
-        return [d for d in MAP_DIMENSIONS if d in shorts]
+        return self._mapped_dimensions(st)
+
+    def _mapped_dimensions(self, st: _ServerMapState) -> list[str]:
+        """上报维度映射为短名：内置按 MAP_DIMENSIONS 顺序，模组按登记顺序。
+
+        未上报清单时给「内置三维度 + 已登记模组维度」，保证有数据的模组
+        维度也不会从页签里消失（清单事件可能晚于瓦片事件到达）。
+        """
+        if not st.reported_dimensions:
+            return list(MAP_DIMENSIONS) + [
+                s for s in st.dyn_dims.values() if s not in MAP_DIMENSIONS
+            ]
+        vanilla = [
+            d
+            for d in MAP_DIMENSIONS
+            if any(
+                MAP_REGISTRY_DIM_SHORT.get(k) == d for k in st.reported_dimensions
+            )
+        ]
+        dynamic = [
+            short for key, short in st.dyn_dims.items() if key in st.reported_dimensions
+        ]
+        return vanilla + dynamic
 
     def _fresh_player_entries(
         self, st: _ServerMapState, dimension: str, now: float
@@ -702,6 +819,8 @@ class MapService:
             "dimension": dimension,
             "updated_at": st.last_event_at,
             "source": MAP_SOURCE_REAL,
+            # 该维度瓦片修订号：前端据此跳过无变化的重解码
+            "revision": st.revision.get(dimension, 0),
             "cell": {"size": 1, "unit": "block"},
             "bbox": list(bbox),
             "tiles": tiles_b64,
@@ -742,6 +861,9 @@ class MapService:
         w 或 h 超上限时，以新鲜玩家均值（无则瓦片质心）为中心取
         ≤MAP_SNAPSHOT_BBOX_MAX 窗口并夹在并集内。命中瓦片且下标 >0 →
         调色板色；下标 0 / 未覆盖 / 下标越界（调色板被截断）→ (0,0,0)。
+        (0,0,0) 同时是「未探索」的占位色，因此调色板里合法的纯黑项抬为
+        (0,0,1)：肉眼看仍是黑，但能与未探索像素区分（否则整片纯黑区域会
+        被前端当作雾盖掉）。
         结果按 (dimension, revision, bbox) 缓存，每维度单条。
         """
         minx = min(cx * 16 for cx, _, _, _ in tiles)
@@ -808,6 +930,9 @@ class MapService:
                     if idx == 0 or idx >= n_colors:
                         continue
                     color = colors[idx]
+                    if color == (0, 0, 0):
+                        # 合法纯黑 ≠ 未探索：抬 1 个蓝分量避免被前端当雾
+                        color = _BLACK_FIX
                     o = (row_cells + k) * 3
                     out[o] = color[0]
                     out[o + 1] = color[1]
@@ -895,17 +1020,31 @@ class MapService:
                     st.reported_dimensions = {
                         d for d in dims if isinstance(d, str) and d
                     }
+                dyn = meta.get("dyn_dims")
+                if isinstance(dyn, dict):
+                    for key, short in dyn.items():
+                        if (
+                            isinstance(key, str)
+                            and isinstance(short, str)
+                            and MAP_REGISTRY_KEY_RE.match(key)
+                            and MAP_DIM_SHORT_RE.match(short)
+                        ):
+                            st.dyn_dims[key] = short
                 dus = meta.get("dim_updated_at")
                 if isinstance(dus, dict):
                     for k, v in dus.items():
                         f = _as_float(v)
-                        if isinstance(k, str) and k in MAP_DIMENSIONS and f is not None:
+                        if isinstance(k, str) and f is not None:
                             st.dim_updated_at[k] = f
+        known_dims = set(MAP_DIMENSIONS) | set(st.dyn_dims.values())
+        st.dim_updated_at = {
+            k: v for k, v in st.dim_updated_at.items() if k in known_dims
+        }
         for f in sorted(entry.glob("*.json")):
             if f.name == "meta.json":
                 continue
             dim = f.stem
-            if dim not in MAP_DIMENSIONS:
+            if dim not in known_dims:
                 continue
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
@@ -933,7 +1072,9 @@ class MapService:
                 st.dim_tile_count[dim] = st.dim_tile_count.get(dim, 0) + 1
         if st.tiles:
             st.ever_tile = True
-        if not (st.tiles or st.palette_colors or st.reported_dimensions):
+        if not (
+            st.tiles or st.palette_colors or st.reported_dimensions or st.dyn_dims
+        ):
             return None
         return st
 
@@ -953,6 +1094,15 @@ class MapService:
             return None
         return cx, cz, size
 
+    @staticmethod
+    def _all_dims(st: _ServerMapState) -> list[str]:
+        """需落盘的维度短名：内置三维度 + 已登记模组维度 + 现存瓦片维度。"""
+        ordered: list[str] = list(MAP_DIMENSIONS)
+        for short in list(st.dyn_dims.values()) + [k[0] for k in st.tiles]:
+            if short not in ordered:
+                ordered.append(short)
+        return ordered
+
     def _write_server(self, server_name: str, st: _ServerMapState) -> None:
         """原子落盘单台服务器（调用方持锁）；失败告警不抛出。"""
         d = self._server_dir(server_name)
@@ -967,9 +1117,10 @@ class MapService:
                     "palette_colors": st.palette_hex,
                     "dimensions": sorted(st.reported_dimensions),
                     "dim_updated_at": st.dim_updated_at,
+                    "dyn_dims": st.dyn_dims,
                 },
             )
-            for dim in MAP_DIMENSIONS:
+            for dim in self._all_dims(st):
                 dim_tiles: dict[str, dict[str, str]] = {}
                 for (dd, cx, cz, size), (sha1v, comp) in st.tiles.items():
                     if dd != dim:

@@ -6060,6 +6060,7 @@ print("OK  UMO 归一 / 隔离对话同群全成员匹配 / 目标去重只发�
 # ============================================================
 print("\n=== 52. 方块地图无数据契约（source=none）+ status/snapshot/teleport API + map_dimension 偏好 ===")
 import shutil as _sh52
+import pathlib as _pl52
 
 from astrbot_plugin_minecraft_queqiao_next.services.map_service import MapService as _MS52
 from astrbot_plugin_minecraft_queqiao_next.core.constants import (
@@ -6075,8 +6076,10 @@ _ms52 = _MS52()
 _snap52 = _ms52.snapshot("Srv52", "overworld", at=1000.0)
 assert _snap52 is not None
 assert set(_snap52.keys()) == {
-    "server_name", "dimension", "updated_at", "source", "reason", "cell", "bbox", "tiles", "players",
+    "server_name", "dimension", "updated_at", "source", "reason", "revision",
+    "cell", "bbox", "tiles", "players",
 }, _snap52.keys()
+assert _snap52["revision"] == 0, "无数据态 revision 恒 0：前端指纹稳定、可跳过重解码"
 assert _snap52["server_name"] == "Srv52" and _snap52["dimension"] == "overworld"
 assert _snap52["updated_at"] == 1000.0, "显式 at 应原样写入 updated_at"
 assert _snap52["source"] == _MSN52 == "none"
@@ -6091,8 +6094,10 @@ assert _MS52().snapshot("Srv52", "overworld", at=1000.0) == _snap52, (
 # ---- (b) status 无数据契约 + set_enabled 关/开切换 ----
 _st52 = _ms52.status("Srv52")
 assert set(_st52.keys()) == {
-    "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
+    "server_name", "enabled", "source", "reason", "dimensions",
+    "dimension_names", "updated_at",
 }, _st52.keys()
+assert _st52["dimension_names"]["overworld"] == "主世界", "内置维度展示名"
 assert _st52["enabled"] is True and _st52["source"] == _MSN52
 assert _st52["reason"] == _MNR52
 assert _st52["dimensions"] == ["overworld", "nether", "the_end"]
@@ -6170,7 +6175,8 @@ _res52 = asyncio.run(_wac52.get_map_status("Srv52"))
 assert _res52["status_code"] == 200
 _d52 = _res52["data"]
 assert set(_d52.keys()) == {
-    "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
+    "server_name", "enabled", "source", "reason", "dimensions",
+    "dimension_names", "updated_at",
 }
 assert _d52["reason"] == _MNR52 and _d52["dimensions"] == ["overworld", "nether", "the_end"]
 assert asyncio.run(_wac52.get_map_status("Nope"))["status_code"] == 404
@@ -6279,13 +6285,38 @@ assert _prefs52({"map_dimension": "nether"})["data"]["prefs"]["map_dimension"] =
 assert _prefs52({"map_dimension": " the_end "})["data"]["prefs"]["map_dimension"] == "the_end", (
     "应容忍前后空白"
 )
-for _bad52 in ({"map_dimension": "sky"}, {"map_dimension": 42}, {"map_dimension": None}):
+assert _prefs52({"map_dimension": "sky"})["data"]["prefs"]["map_dimension"] == "sky", (
+    "模组维度短名（合法形态但非内置）应被接受")
+assert _prefs52({"map_dimension": " Galaxy "})["data"]["prefs"]["map_dimension"] == (
+    "galaxy"), "模组短名应统一小写"
+for _bad52 in ({"map_dimension": "sky world"}, {"map_dimension": "a-b:c"},
+               {"map_dimension": "x" * 49}, {"map_dimension": ""},
+               {"map_dimension": 42}, {"map_dimension": None}):
     assert _prefs52(_bad52)["status_code"] == 400, _bad52
-assert _pp52.all()["map_dimension"] == "the_end", "非法值不得覆盖已存偏好"
+assert _pp52.all()["map_dimension"] == "galaxy", "非法值不得覆盖已存偏好"
+
+# ---- (g) 前端静态守卫：动态维度 / 指纹 revision / 状态行定高（闪烁回归）----
+_web52 = _pl52.Path(__file__).resolve().parent / "pages" / "dashboard"
+_mvjs52 = (_web52 / "map-view.js").read_text(encoding="utf-8")
+_css52 = (_web52 / "style.css").read_text(encoding="utf-8")
+for _need52 in ("applyDimensions", "renderDimOptions", "dimension_names",
+                "state.dims", "state.dimLabels"):
+    assert _need52 in _mvjs52, f"map-view.js 缺少动态维度实现 {_need52}"
+assert "resp.revision" in _mvjs52, "快照指纹必须优先用 revision"
+assert "tileCanvas" in _mvjs52 and "decodeTiles(" in _mvjs52
+# 状态行必须是定高：高度随文字/换行变化会挤动 flex:1 画布 → 位图重建 → 地图跳动闪烁
+_row52 = _css52.split(".map-status-row {", 1)[1].split("}", 1)[0]
+assert "height: 32px" in _row52 and "box-sizing: border-box" in _row52, (
+    "地图状态行必须定高（box-sizing:border-box; height:32px），否则文字出现时挤动画布导致闪烁")
+assert "max-height: 32px" in _row52 and "overflow: hidden" in _row52, (
+    "状态行需 max-height + overflow:hidden 兜底，长文案不得撑高"
+)
+_status52 = _css52.split("#map-status {", 1)[1].split("}", 1)[0]
+assert "white-space: nowrap" in _status52, "状态文字不得换行撑高行高"
 
 print("OK  无数据契约空态（source=none/无瓦片/无玩家/确定一致）/ set_enabled 关-开 reason 切换 / "
       "status+snapshot+teleport API（404/400/无回执不重发/y 回落/坐标格式化/已禁服务器传送拒绝）/ "
-      "map_dimension 白名单")
+      "map_dimension 白名单（内置 ∪ 模组短名形态）/ 前端动态维度与状态行定高守卫")
 
 print("\n=== 53. MapService 真实数据链路（zlib-pal8 / sha1 去重 / 换盘清空 / 容错 / 玩家时效 / 持久化） ===")
 import base64 as _b6453
@@ -6300,6 +6331,7 @@ from astrbot_plugin_minecraft_queqiao_next.services.map_service import (
     safe_server_name as _SSN53,
 )
 from astrbot_plugin_minecraft_queqiao_next.core.constants import (
+    MAP_DIMENSION_NAMES as _MNAMES53,
     MAP_DIMENSIONS as _MDIMS53,
     MAP_EVENT_SUB_TYPES as _MEST53,
     MAP_PLAYER_STALE_SECONDS as _MPS53,
@@ -6472,22 +6504,36 @@ assert _ms53.snapshot(
 assert _ms53.snapshot(_srvply53, _NE53)["players"] == [], (
     "玩家只应出现在其上报维度")
 
-# ---- (f) map_dimensions：registry 短名映射 / 未知维度忽略 / 未知维度瓦片被拒 ----
+# ---- (f) map_dimensions：内置别名 / mod 维度动态登记 / 非法 key 拒绝 ----
 _srvdm53 = "Srv53dm"
 _ms53.handle_event(_srvdm53, _ev53(_MSPa53, id="d1", colors=["#000000", "#0000FF"]))
 _ms53.handle_event(_srvdm53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
     _tile53(0, 0, 1, {(0, 0): 1})]))
 assert _ms53.handle_event(_srvdm53, _ev53(_MSD53, dimensions=[
     _RDIM53[_OW53], _RDIM53[_NE53], "custom:galaxy"])) is True
-assert _ms53.status(_srvdm53)["dimensions"] == [_OW53, _NE53], (
-    "上报维度按 MAP_REGISTRY_DIM_SHORT 映射并按 MAP_DIMENSIONS 顺序去重，未知忽略")
+_statdm53 = _ms53.status(_srvdm53)
+assert _statdm53["dimensions"] == [_OW53, _NE53, "galaxy"], (
+    "内置维度按 MAP_DIMENSIONS 顺序，mod 维度按登记顺序追加")
+assert _statdm53["dimension_names"]["galaxy"] == "custom:galaxy", (
+    "mod 维度展示名回落 registry key")
+assert _statdm53["dimension_names"][_OW53] == _MNAMES53[_OW53], "内置维度展示名不变"
 assert _ms53.handle_event(_srvdm53, _ev53(_MSTi53, dimension="custom:galaxy", tiles=[
     _tile53(0, 0, 1, {(0, 0): 1})])) is True
-assert {k[0] for k in _ms53._states[_srvdm53].tiles} == {_OW53}, (
-    "无法映射维度的瓦片不得入库")
-assert _ms53.handle_event(_srvdm53, _ev53(
-    _MSD53, dimensions=["custom:galaxy"])) is True
-assert _ms53.status(_srvdm53)["dimensions"] == [], "全未知上报 → 无可映射维度"
+assert {k[0] for k in _ms53._states[_srvdm53].tiles} == {_OW53, "galaxy"}, (
+    "已登记的 mod 维度瓦片应入库")
+_snapdm53 = _ms53.snapshot(_srvdm53, "galaxy", at=1000.0)
+assert _snapdm53 is not None and _snapdm53["source"] == _MSR53 and (
+    _snapdm53["revision"] == _ms53._states[_srvdm53].revision["galaxy"]), (
+    "mod 维度快照可用且带 revision")
+# 非法 registry key（缺命名空间/大写/空格）不得登记，其瓦片不得入库
+_tiles_before53 = len(_ms53._states[_srvdm53].tiles)
+for _bad53 in ("galaxy", "Custom:Galaxy", "custom:gal axy", "", 123):
+    assert _ms53.handle_event(_srvdm53, _ev53(_MSTi53, dimension=_bad53, tiles=[
+        _tile53(1, 1, 1, {(0, 0): 1})])) is True
+assert len(_ms53._states[_srvdm53].tiles) == _tiles_before53, (
+    "非法维度的瓦片不得入库")
+assert _ms53.snapshot(_srvdm53, "galaxy2", at=1000.0) is None, "未登记维度快照返回 None"
+assert _ms53.snapshot(_srvdm53, "galaxy", at=1000.0) is not None, "已登记维度快照可用"
 
 # ---- (g) 持久化往返：tmp data_dir 写事件 → flush() → 新实例磁盘加载一致 ----
 _dir53 = pathlib.Path(tempfile.mkdtemp(prefix="qmap53_"))
@@ -6518,9 +6564,51 @@ try:
     assert _stprt53["dimensions"] == [_NE53], "上报维度也应随 meta.json 恢复"
 finally:
     _sh53.rmtree(_dir53, ignore_errors=True)
+# ---- (h) 快照 revision / 调色板纯黑项 / 同 id 换色板清瓦片 ----
+_srvh53 = "Srv53h"
+_ms53.handle_event(_srvh53, _ev53(_MSPa53, id="h1", colors=["#FF0000", "#000000"]))
+_ms53.handle_event(_srvh53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 0, (1, 0): 1})]))
+_snaph53 = _ms53.snapshot(_srvh53, _OW53, at=1000.0)
+assert _snaph53["revision"] == _ms53._states[_srvh53].revision[_OW53] >= 1, (
+    "真实快照带该维度 revision")
+assert _snap_px53(_snaph53, 0, 0) == (0, 0, 0), "下标 0 = 未探索，不取调色板色"
+assert _snap_px53(_snaph53, 1, 0) == (0, 0, 1), (
+    "调色板里的合法纯黑（下标>0）抬为 (0,0,1)，不被前端当未探索雾")
+_sth53 = _ms53._states[_srvh53]
+_revh53 = _sth53.revision[_OW53]
+_ms53.handle_event(_srvh53, _ev53(_MSPa53, id="h1", colors=["#FF0000", "#00FF00"]))
+assert len(_ms53._states[_srvh53].tiles) == 0, (
+    "色板内容变化即使 palette id 相同也必须清空旧瓦片（否则新旧量化混用错色）")
+assert _ms53._states[_srvh53].revision[_OW53] == _revh53 + 1, "换色板应 bump revision"
+
+# ---- (i) mod 维度持久化往返：短名进 meta.json，重启后页签与快照仍在 ----
+_dir53b = pathlib.Path(tempfile.mkdtemp(prefix="qmap53b_"))
+try:
+    _srvmd53 = "Srv53md"
+    _msmd53 = _MS53(_dir53b)
+    _msmd53.handle_event(_srvmd53, _ev53(_MSPa53, id="m1", colors=["#000000", "#ABCDEF"]))
+    _msmd53.handle_event(_srvmd53, _ev53(_MSTi53, dimension="mod:deep", tiles=[
+        _tile53(0, 0, 1, {(0, 0): 1})]))
+    _msmd53.flush()
+    _meta53 = _json.loads((_dir53b / "map" / _SSN53(_srvmd53) / "meta.json")
+                          .read_text(encoding="utf-8"))
+    assert _meta53["dyn_dims"] == {"mod:deep": "deep"}, (
+        "mod 维度短名映射必须随 meta.json 落盘")
+    _msmd53b = _MS53(_dir53b)
+    assert _msmd53b.status(_srvmd53)["dimensions"] == [
+        _OW53, _NE53, _TE53, "deep"], "重启后 mod 维度页签仍在"
+    _snapmd53 = _msmd53b.snapshot(_srvmd53, "deep", at=1000.0)
+    assert _snapmd53 is not None and _snapmd53["tiles"] == (
+        _msmd53.snapshot(_srvmd53, "deep", at=1000.0)["tiles"]), (
+        "重启后 mod 维度快照逐字节一致")
+finally:
+    _sh53.rmtree(_dir53b, ignore_errors=True)
+
 print("OK  zlib-pal8 端到端（负坐标/多 size/下标0与越界→黑）/ sha1 去重幂等+新内容 bump / "
       "换调色板清空全服瓦片+全黑小窗（玩家中心）/ 非法 format·b64·zlib·长度·调色板整盘拒 / "
-      "瓦片先于调色板丢弃 / 玩家时效缺席与维度过滤 / map_dimensions 映射与未知忽略 / "
+      "瓦片先于调色板丢弃 / 玩家时效缺席与维度过滤 / 内置别名+mod 维度动态登记与非法 key 拒绝 / "
+      "快照 revision / 调色板纯黑项夹紧 / 同 id 换色板清瓦片 / mod 维度持久化往返 / "
       "flush+新实例持久化往返（安全目录名）")
 
 print("\n=== 54. main 拦截四类地图事件（旁路消费，不进指标/终端日志/AI/转发）+ map_enabled 门控 ===")

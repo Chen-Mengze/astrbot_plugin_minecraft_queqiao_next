@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft 鹊桥互通 Next</h1>
 <p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.7-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.8-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
@@ -103,13 +103,15 @@
 
 「功能设置」面板下方是「🗺️ 方块地图」面板：仅在选中单台服务器时显示（与功能设置同样的显隐规则），画布按区块渲染该服各维度的已探索方块地图：
 
-- **真实地图数据**：面板展示服务器实时地图——按区块瓦片渲染，仅主世界 / 下界 / 末地三个维度。数据来自服务端 mod [QueQiao-Map-Web](https://github.com/Chen-Mengze/QueQiao-Map-Web)：服务端需同时安装[鹊桥](https://github.com/17TheWord/QueQiao)消息 mod，并在 QueQiao-Map-Web 的 `config/queqiao-mapext.yml` 里设 `enabled: true`，其 `server_name` 与插件该服务器条目的配置一致。地图事件经现有鹊桥连接自动旁路接收，是否接收由该服务器的 `map_enabled` 开关控制
+- **真实地图数据**：面板展示服务器实时地图——按区块瓦片渲染；维度为内置三档（主世界 / 下界 / 末地）**加上 mod 上报的模组维度**（如 `custom:galaxy`，自动登记为下拉页签）。数据来自服务端 mod [QueQiao-Map-Web](https://github.com/Chen-Mengze/QueQiao-Map-Web)：服务端需同时安装[鹊桥](https://github.com/17TheWord/QueQiao)消息 mod，并在 QueQiao-Map-Web 的 `config/queqiao-mapext.yml` 里设 `enabled: true`，其 `server_name` 与插件该服务器条目的配置一致。地图事件经现有鹊桥连接自动旁路接收，是否接收由该服务器的 `map_enabled` 开关控制
 - **空态与安装引导**：未推送地图流的服务器不再展示任何合成内容：状态徽标显示「无地图数据」，悬停显示原因——尚未收到该服务器的地图事件，需服务端安装 QueQiao-Map-Web mod 并在其 `config/queqiao-mapext.yml` 设 `enabled: true`；服务端接入 mod 后即自动切换为真实数据，前端与接口不变
 - **方块地图开关**：每台服务器的 `map_enabled`（默认启用）可在「功能设置」面板免重载热切换；关闭后不再接收该服务器的地图事件、地图面板隐藏、右键传送接口返回拒绝（方块地图功能已关闭）
 - **AstrBot 重启不丢图**：调色板与区块瓦片持久化在本地 `data_dir/map/` 下，重启后自动加载恢复；服务端（重）启动更换调色板 id 时旧瓦片会被清空，等待 mod 重新推送重建
 - **已探索区域**：只渲染推送过的区块瓦片（1 格 = 1 方块，方块配色来自服务端调色板），未探索区域显示为暗色遮罩
 - **基本地图操作**：拖拽平移、滚轮以指针为中心缩放（0.25～16 像素 / 方块）、＋ / － / 复位按钮、手动刷新
-- **维度切换**：主世界 / 下界 / 末地改为可展开下拉列表切换，仍记住上次维度（后端面板偏好 `map_dimension`），刷新 / 换设备后保持
+- **维度切换**：可展开下拉列表切换，仍记住上次维度（后端面板偏好 `map_dimension`），刷新 / 换设备后保持；列表由后端 `status.dimensions` 下发，**模组维度自动出现**（展示名取 `status.dimension_names`，缺省用注册名），模组移除后对应页签自动消失、当前维度若已不存在则回落到主世界
+- **数据解析规范对齐**（[QueQiao-Map-Web INTEGRATION.md](https://github.com/Chen-Mengze/QueQiao-Map-Web/blob/main/docs/INTEGRATION.md)）：四类事件按 `sub_type` 路由、未知 `sub_type` / `format` 与非 `zlib-pal8` 瓦片跳过且不影响后续事件；调色板 **id 变化或颜色内容变化**都会清空该服旧瓦片（避免新旧量化混用出错色）；快照带 `revision` 供前端做「未变化即跳过重解码」的指纹；调色板里的**合法纯黑**（下标 > 0）在合成快照时抬成 `(0,0,1)`，与「纯黑 = 未探索」的占位语义区分开，避免真实黑色方块被画成未探索区域；维度注册名非法（缺命名空间 / 大写 / 空格）不入库，模组维度短名随 `meta.json` 持久化
+- **闪烁加固**：地图面板状态行改为**定高 32px 不换行**（此前 `min-height:28px` 会被文字撑到 32px，把 `flex:1` 的画布从 344px 挤到 339px —— 画布尺寸一变就要重建位图重绘，肉眼就是地图跳一下）；快照短暂返回空瓦片时保留旧帧、不再写红色错误状态行；面板状态行 / 数据源徽标 / 更新时间等文本同值不重写 DOM，同一服务器视图重复激活不再重启轮询
 - **实时位置**：在线玩家以头像 + 名字标记显示并平滑移动（真实流下来自 mod 的玩家位置心跳，超过约 5 秒无更新自动移除）
 - **右键传送**（走鹊桥 / RCON 指令通道，指令只发送一次、超时不重发）：右键地图上的玩家头像——或服务器卡片里的玩家胶囊——把该玩家传送到另一玩家；右键地图空白处选定玩家传送到该点坐标（缺 Y 时先读玩家当前高度，失败回落 64）。结果（成功 / 失败与执行的指令原文）显示在面板状态行，并记入互通终端系统日志
 - **传送菜单滚动**：右键传送菜单高度按视口钳制（min(60vh, 480px)），玩家列表较长时滚轮滚动浏览、不会误关菜单，超长玩家名以省略号截断

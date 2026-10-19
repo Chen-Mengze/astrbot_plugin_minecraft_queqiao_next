@@ -2980,6 +2980,9 @@ body {
   pointer-events: none;
 }
 
+/* 状态行必须是**定高**：它的高度变化会挤动 flex:1 的地图画布（画布尺寸一变就要
+   重建位图并重绘，肉眼上就是地图整体跳动/闪一下）。此前 min-height:28px 在有文字
+   时被内容撑到 32px，画布随之 344→339 抖动，因此改为恒定 32px 且不换行。 */
 .map-status-row {
   display: flex;
   align-items: center;
@@ -2989,11 +2992,27 @@ body {
   font-size: 12px;
   color: var(--text-secondary);
   flex-shrink: 0;
-  min-height: 28px;
+  box-sizing: border-box;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 #map-cursor-info {
   font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 状态文字超长时省略，绝不换行撑高行高 */
+#map-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #map-status.ok {

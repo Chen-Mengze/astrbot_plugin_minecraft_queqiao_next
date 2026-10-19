@@ -1387,6 +1387,7 @@ class DashboardApp {
   renderServerTabs() {
     const tabsEl = document.getElementById('server-tabs');
     if (!tabsEl) return;
+    const prevTab = this.activeServerTab;
     tabsEl.innerHTML = '';
 
     tabsEl.appendChild(this.buildServerTab('all', '🌐 全部服务器', null));
@@ -1408,8 +1409,16 @@ class DashboardApp {
     this.syncImageBedDot();
 
     // 仅同步高亮，实际渲染交由 refreshAll 统一执行；不加持久化写入，
-    // 避免每轮自动刷新都向后端重复写当前值
-    this.activateServerTab(this.activeServerTab, { render: false, persist: false });
+    // 避免每轮自动刷新都向后端重复写当前值。
+    // 激活视图未变化时只同步高亮，绝不重走 activateServerTab——否则每轮
+    // 都会重新派发 queqiao:server-view-changed，地图面板随之重启轮询、
+    // 重建画布缓冲，地图区出现肉眼可见的闪烁。仅当激活视图真的变了
+    // （如服务器被移除回退全局）才走完整激活流程。
+    if (prevTab !== this.activeServerTab) {
+      this.activateServerTab(this.activeServerTab, { render: false, persist: false });
+    } else {
+      this.syncTabHighlight();
+    }
   }
 
   buildServerTab(key, label, connected) {
@@ -1429,6 +1438,14 @@ class DashboardApp {
     return btn;
   }
 
+  // 仅同步标签高亮：不动布局、不派发 queqiao:server-view-changed、不重启任何轮询
+  syncTabHighlight() {
+    document.querySelectorAll('#server-tabs .server-tab, #tab-image-bed')
+      .forEach(b => {
+        b.classList.toggle('active', b.dataset.view === this.activeServerTab);
+      });
+  }
+
   // 切换视图（全局 / 服务器 / 图床 / 配置管理）：统计卡片、服务器面板、终端、
   // 图床面板与配置面板按视图显示/隐藏。图床/配置视图独立于服务器：隐藏
   // stats-grid 与 layout-main（服务器主体），显示对应面板并停止终端轮询
@@ -1445,10 +1462,7 @@ class DashboardApp {
     }
     if (persist) this.persistActiveTab(key);
     // 图床标签在 #server-tabs 之外（不受内渲染重建），需一并高亮
-    document.querySelectorAll('#server-tabs .server-tab, #tab-image-bed')
-      .forEach(b => {
-        b.classList.toggle('active', b.dataset.view === key);
-      });
+    this.syncTabHighlight();
 
     if (isImageBed) {
       // 图床视图：隐藏统计卡与服务器主体，显示图床面板；停止所有服务器

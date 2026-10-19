@@ -28,6 +28,7 @@ from ..core.constants import (
     DEFAULT_WS_URL,
     MAP_DEFAULT_DIMENSION,
     MAP_DIMENSIONS,
+    MAP_DIM_SHORT_RE,
     MAP_FALLBACK_Y,
     PLUGIN_NAME,
     TERMINAL_DAYS_MAX,
@@ -1876,7 +1877,8 @@ class WebApiController:
         ``auto_refresh_interval``（仪表盘自动刷新间隔秒数，10~3600）、
         ``settings_collapsed``（仪表盘「功能设置」面板是否折叠，布尔）、
         ``active_tab``（当前打开的服务器视图，'all' 或服务器名，≤64 字符）、
-        ``map_dimension``（方块地图当前展示维度，overworld/nether/the_end 之一）。
+        ``map_dimension``（方块地图当前展示维度：内置 overworld/nether/the_end
+        或已登记的模组维度短名；前端以 status.dimensions 为准做回落）。
         """
         if self.panel_prefs is None:
             return error_response("面板偏好存储未接入", status_code=503)
@@ -1931,9 +1933,14 @@ class WebApiController:
             if not isinstance(raw_md, str):
                 return error_response("map_dimension 需为字符串", status_code=400)
             md_value = raw_md.strip().lower()
-            if md_value not in MAP_DIMENSIONS:
+            # 内置三维度 + 模组维度动态短名（各服登记结果不同，这里只做形态
+            # 校验；前端拿到 status.dimensions 后若不含当前值会自动回落）。
+            if md_value not in MAP_DIMENSIONS and not MAP_DIM_SHORT_RE.match(
+                md_value
+            ):
                 return error_response(
-                    f"map_dimension 取值非法: {raw_md}（可选 {'/'.join(MAP_DIMENSIONS)}）",
+                    f"map_dimension 取值非法: {raw_md}"
+                    f"（可选 {'/'.join(MAP_DIMENSIONS)} 或模组维度短名）",
                     status_code=400,
                 )
             fields["map_dimension"] = md_value
@@ -2138,8 +2145,12 @@ class WebApiController:
         dimension = dimension.strip().lower() or MAP_DEFAULT_DIMENSION
         snapshot = self.map_service.snapshot(server_name, dimension)
         if snapshot is None:
+            known = getattr(self.map_service, "known_dimensions", None)
+            choices = (
+                known(server_name) if callable(known) else list(MAP_DIMENSIONS)
+            )
             return error_response(
-                f"非法维度: {dimension}（可选 {'/'.join(MAP_DIMENSIONS)}）",
+                f"非法维度: {dimension}（可选 {'/'.join(choices)}）",
                 status_code=400,
             )
         return json_response(snapshot)

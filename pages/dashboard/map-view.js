@@ -25,6 +25,8 @@
  */
 const PLUGIN_PATH = 'astrbot_plugin_minecraft_queqiao_next';
 
+// 默认三个原版维度及其中文名；运行时以 status.dimensions / dimension_names 为准
+// （已登记 mod 维度会追加进来，见 applyDimensions）
 const DIMENSIONS = ['overworld', 'nether', 'the_end'];
 const DIM_LABELS = { overworld: '主世界', nether: '下界', the_end: '末地' };
 const MAP_SOURCE_REAL = 'queqiao-map-web';  // status/snapshot 的 source：真实推送（其余按无数据空态处理）
@@ -33,6 +35,10 @@ const MIN_PX_PER_CELL = 0.25;  // 缩放下限：每方块像素
 const MAX_PX_PER_CELL = 16;    // 缩放上限：每方块像素
 const MOVE_ANIM_MS = 700;      // 玩家位置线性插值时长（体现实时移动）
 const HIT_RADIUS_PX = 16;      // 玩家标记命中半径（屏幕像素）
+
+// ?mapdebug=1 开启地图诊断日志（排查闪烁/轮询异常；默认关闭，零开销）
+const MAP_DEBUG = new URLSearchParams(window.location.search).get('mapdebug') === '1';
+const mapDbg = (...args) => { if (MAP_DEBUG) console.log('[map-debug]', ...args); };
 
 const el = (id) => document.getElementById(id);
 const enc = encodeURIComponent;
@@ -73,6 +79,10 @@ async function apiPost(endpoint, body = {}) {
 const state = {
   serverName: null,      // 当前视图服务器；null = 面板隐藏
   dimension: 'overworld',
+  dims: DIMENSIONS.slice(),      // 可选维度（status.dimensions：内置 + 已登记 mod 维度）
+  dimLabels: { ...DIM_LABELS },  // 短名 → 展示名（status.dimension_names）
+  dimSig: '',                    // 维度清单签名：相同则零 DOM 重建（避免轮询期闪烁）
+  prefDim: null,                 // 后端恢复的维度偏好（等它进入可选清单后再落地）
   dimTouched: false,     // 已从后端恢复或用户手动切过维度（恢复不再覆盖手动值）
   status: null,          // map/<server>/status 最近响应
   mapDisabled: false,    // 当前服务器 map_enabled=false：面板隐藏、轮询已停
@@ -95,11 +105,15 @@ const state = {
 function setMapStatus(text, kind = '') {
   const node = el('map-status');
   if (!node) return;
-  node.textContent = text;
+  const want = text || '';
+  const curKind = node.classList.contains('ok') ? 'ok'
+    : (node.classList.contains('err') ? 'err' : '');
+  if (node.textContent === want && curKind === (kind || '')) return; // 同值不碰 DOM、不重置自动清除计时
+  node.textContent = want;
   node.classList.remove('ok', 'err');
   if (kind) node.classList.add(kind);
   if (state.statusTimer) clearTimeout(state.statusTimer);
-  if (text) {
+  if (want) {
     state.statusTimer = setTimeout(() => {
       node.textContent = '';
       node.classList.remove('ok', 'err');
@@ -111,23 +125,28 @@ function setMapStatus(text, kind = '') {
 function updateSourceBadge(resp) {
   const badge = el('map-source-badge');
   if (!badge) return;
+  let text;
+  let title;
   if (resp && resp.source === MAP_SOURCE_REAL) {
-    badge.textContent = '真实数据：QueQiao-Map-Web';
-    badge.title = '地图数据由服务端 QueQiao-Map-Web mod 经鹊桥实时推送';
+    text = '真实数据：QueQiao-Map-Web';
+    title = '地图数据由服务端 QueQiao-Map-Web mod 经鹊桥实时推送';
   } else {
-    badge.textContent = '无地图数据';
-    badge.title = (resp && resp.reason)
+    text = '无地图数据';
+    title = (resp && resp.reason)
       || '尚未收到该服务器的地图事件：服务端安装 QueQiao-Map-Web mod 后可查看真实地图';
   }
+  if (badge.textContent === text && badge.title === title) return; // 同值不写：避免每轮轮询替换文本节点
+  badge.textContent = text;
+  badge.title = title;
 }
 
 function setMapEmpty(text) {
   const box = el('map-empty');
   if (!box) return;
   if (text) {
-    box.textContent = text;
+    if (box.textContent !== text) box.textContent = text;
     box.classList.remove('hidden');
-  } else {
+  } else if (!box.classList.contains('hidden')) {
     box.textContent = '';
     box.classList.add('hidden');
   }
@@ -144,6 +163,14 @@ function formatUpdatedAt(value) {
   if (Number.isNaN(date.getTime())) return `更新 ${String(value)}`;
   const pad = (n) => String(n).padStart(2, '0');
   return `更新 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/* 时钟文本幂等写入：秒值未变时不替换文本节点（减少轮询期的无谓 mutation） */
+function setUpdatedText(value) {
+  const node = el('map-updated');
+  if (!node) return;
+  const want = formatUpdatedAt(value);
+  if (node.textContent !== want) node.textContent = want;
 }
 
 /* ---------- 视图与坐标 ---------- */
@@ -371,14 +398,24 @@ function resizeCanvas() {
   if (w <= 0 || h <= 0) return;
   const bw = Math.round(w * dpr);
   const bh = Math.round(h * dpr);
-  // 仅在 CSS 尺寸真正变化时才写 width/height：赋值本身会清空画布，每帧写同值也会闪烁
-  if (canvas.width !== bw || canvas.height !== bh) {
+  // 仅在 CSS 尺寸真正变化时才写 width/height：赋值本身会清空画布缓冲
+  const resized = canvas.width !== bw || canvas.height !== bh;
+  if (resized) {
+    mapDbg('canvas buffer recreated ' + canvas.width + 'x' + canvas.height + ' -> ' + bw + 'x' + bh);
     canvas.width = bw;
     canvas.height = bh;
   }
   canvas.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); // 之后按 CSS 像素作图
   if (state.snapshot && !state.viewReady) fitView();
-  requestDraw();
+  if (resized) {
+    // 关键防闪烁：缓冲刚被重建（写入即清空），若走 requestDraw 会等到下一帧才补画，
+    // 中间浏览器可能绘出一帧空白画布（露出面板亮底色）——地图区「闪一下黑/亮」的正主。
+    // 这里在同一同步任务里立即重画，空白帧永远不可能被合成上屏。
+    const panel = el('map-panel');
+    if (state.serverName && panel && !panel.classList.contains('hidden')) drawMap();
+  } else {
+    requestDraw();
+  }
 }
 
 /* ---------- API 拉取 ---------- */
@@ -405,6 +442,8 @@ async function fetchStatus() {
       if (!state.pollTimer) startPolling();
     }
     updateSourceBadge(resp);
+    // 维度页签动态化：内置三维度 + 已登记 mod 维度（清单不变时零 DOM 操作）
+    applyDimensions(resp && resp.dimensions, resp && resp.dimension_names);
   } catch (e) {
     if (state.serverName !== serverAtFetch) return;
     state.status = null;
@@ -443,18 +482,26 @@ async function fetchSnapshot() {
       state.players.clear();
       updateSourceBadge(resp);
       setMapEmpty(resp.reason || '暂无地图数据');
-      const updatedNone = el('map-updated');
-      if (updatedNone) updatedNone.textContent = formatUpdatedAt(resp.updated_at);
+      setUpdatedText(resp.updated_at);
       requestDraw();
       return;
     }
     state.snapshot = resp;
+    if (!resp.tiles) {
+      // 真实流也可能给出空瓦片（维度刚登记 / 瓦片还没到）：保留旧帧、不报错、
+      // 不清屏，只在空态遮罩提示——避免状态行变红撑动布局（闪烁诱因）
+      mergePlayers(resp);
+      setUpdatedText(resp.updated_at);
+      setMapStatus('');
+      setMapEmpty(resp.reason || '该维度暂无瓦片数据');
+      requestDraw();
+      return;
+    }
     const key = snapshotKey(resp);
     if (key && key === state.lastSnapshotKey && state.tileCanvas) {
       // 快照未变：沿用已解码瓦片（不重新 decode、不产生空帧），玩家照常合并插值
       mergePlayers(resp);
-      const updatedSame = el('map-updated');
-      if (updatedSame) updatedSame.textContent = formatUpdatedAt(resp.updated_at);
+      setUpdatedText(resp.updated_at);
       setMapEmpty('');
       requestDraw();
       return;
@@ -463,9 +510,12 @@ async function fetchSnapshot() {
     // 解码期间可见画布保持上一帧，不做任何 clearRect/清屏
     let decoded = null;
     try {
+      const t0 = performance.now();
       decoded = decodeTiles(resp.tiles, resp.bbox);
+      mapDbg('tiles decoded key=' + key + ' ' + Math.round(performance.now() - t0) + 'ms');
     } catch (e) {
       state.tileError = e.message;
+      mapDbg('tiles decode failed key=' + key + ': ' + e.message);
     }
     if (decoded) {
       state.tileCanvas = decoded;
@@ -477,8 +527,7 @@ async function fetchSnapshot() {
     }
     if (!state.viewReady) fitView();
     mergePlayers(resp);
-    const updated = el('map-updated');
-    if (updated) updated.textContent = formatUpdatedAt(resp.updated_at);
+    setUpdatedText(resp.updated_at);
     if (state.tileCanvas) setMapEmpty('');
     else setMapEmpty(`瓦片解码失败：${state.tileError}`);
     requestDraw();
@@ -495,6 +544,9 @@ function startPolling() {
   fetchSnapshot();
   state.pollTimer = setInterval(() => {
     if (document.hidden) return; // 页签不可见不轮询
+    // status 同步轮询：mod 维度新增/数据源切换无需刷新页面即可反映（幂等，
+    // 清单未变时不碰 DOM）
+    fetchStatus();
     fetchSnapshot();
   }, POLL_MS);
 }
@@ -625,8 +677,71 @@ function openPointTeleportMenu(serverName, px, pz, x, y) {
 }
 
 /* ---------- 维度切换（map_dimension 走后端 panel_prefs，AGENTS §4.7） ---------- */
+/* 按 state.dims / state.dimLabels 重建下拉选项（只在清单变化时调用，
+   避免每轮轮询重建 DOM 导致下拉闪动） */
+function renderDimOptions() {
+  const list = el('map-dim-list');
+  if (!list) return;
+  const frag = document.createDocumentFragment();
+  state.dims.forEach((dim) => {
+    const opt = document.createElement('button');
+    opt.type = 'button';
+    opt.className = 'map-dim-option';
+    opt.dataset.dim = dim;
+    opt.setAttribute('role', 'option');
+    opt.textContent = state.dimLabels[dim] || dim;
+    opt.addEventListener('click', () => {
+      applyDimension(dim);
+      setDimsOpen(false);
+    });
+    frag.appendChild(opt);
+  });
+  list.replaceChildren(frag);
+}
+
+/* 维度清单动态化：后端 status.dimensions = 内置三维度 + 已登记 mod 维度，
+   dimension_names 给短名到展示名。清单/名称都未变时直接返回（零 DOM），
+   当前维度被移除（mod 卸载/换服）时回落主世界并重新拉快照。 */
+function applyDimensions(dims, names) {
+  if (!Array.isArray(dims)) return;
+  const next = [];
+  dims.forEach((d) => {
+    if (typeof d === 'string' && d && next.indexOf(d) < 0) next.push(d);
+  });
+  if (!next.length) return;
+  const nextLabels = {};
+  next.forEach((d) => {
+    const given = names && typeof names[d] === 'string' ? names[d] : '';
+    nextLabels[d] = given || DIM_LABELS[d] || d;
+  });
+  const sig = next.join('|') + '::' + next.map((d) => nextLabels[d]).join('|');
+  if (sig === state.dimSig) return; // 未变化：不碰 DOM、不重排
+  const dimsChanged = next.length !== state.dims.length
+    || next.some((d, i) => d !== state.dims[i]);
+  state.dims = next;
+  state.dimLabels = nextLabels;
+  state.dimSig = sig;
+  if (dimsChanged) renderDimOptions();
+  if (state.dims.indexOf(state.dimension) < 0) {
+    state.dimension = 'overworld';
+    state.viewReady = false;
+    state.snapshot = null;
+    state.tileCanvas = null;
+    state.lastSnapshotKey = '';
+    state.players.clear();
+    if (state.serverName) fetchSnapshot();
+  }
+  syncDimButtons();
+  // 后端偏好里的 mod 维度可能晚于首轮 status 进入清单：进入后立即落地
+  if (!state.dimTouched && state.prefDim && state.dims.indexOf(state.prefDim) >= 0) {
+    const pref = state.prefDim;
+    state.prefDim = null;
+    applyDimension(pref, { persist: false });
+  }
+}
+
 function applyDimension(dim, { persist = true } = {}) {
-  if (!DIMENSIONS.includes(dim)) return;
+  if (state.dims.indexOf(dim) < 0) return;
   state.dimTouched = true;
   if (dim === state.dimension) {
     syncDimButtons();
@@ -654,7 +769,7 @@ function applyDimension(dim, { persist = true } = {}) {
    函数名沿用 syncDimButtons，applyDimension / init 各调用点保持不变 */
 function syncDimButtons() {
   const label = el('map-dim-current-label');
-  if (label) label.textContent = DIM_LABELS[state.dimension] || state.dimension;
+  if (label) label.textContent = state.dimLabels[state.dimension] || state.dimension;
   document.querySelectorAll('#map-dim-list .map-dim-option').forEach((opt) => {
     const active = opt.dataset.dim === state.dimension;
     opt.classList.toggle('active', active);
@@ -684,6 +799,13 @@ function setServer(serverName) {
     return;
   }
   const changed = serverName !== state.serverName;
+  mapDbg('setServer ' + serverName + ' changed=' + changed + ' polling=' + !!state.pollTimer + ' disabled=' + state.mapDisabled);
+  // 同一服务器视图重复激活且轮询在跑（自动刷新每轮都派发本事件）：
+  // 不重启定时器、不立即补拉——消除轮询风暴与随之而来的重复重绘
+  if (!changed && state.pollTimer && !state.mapDisabled) {
+    panel.classList.remove('hidden');
+    return;
+  }
   state.serverName = serverName;
   panel.classList.remove('hidden');
   if (changed) {
@@ -852,7 +974,11 @@ function init() {
   apiGet('panel/prefs')
     .then((resp) => {
       const dim = resp && resp.prefs && resp.prefs.map_dimension;
-      if (!state.dimTouched && DIMENSIONS.includes(dim)) applyDimension(dim, { persist: false });
+      if (!state.dimTouched && typeof dim === 'string' && dim) {
+        // mod 维度此时可能还没登记：先记下，等 status 把它纳入清单后落地
+        if (state.dims.indexOf(dim) >= 0) applyDimension(dim, { persist: false });
+        else state.prefDim = dim;
+      }
     })
     .catch((e) => {
       console.warn('拉取地图维度偏好失败:', e);

@@ -55,6 +55,8 @@ astrbot_plugin_minecraft_queqiao_next/
 │   ├── message_bridge.py   #   双向转发 + 回环抑制 + 富文本剥离
 │   ├── image_host.py       #   内置图片 HTTP 服务（无公开 URL 图片转玩家可访问链接）
 │   ├── image_bed.py        #   图片转存条目（内置 HTTP + 第三方图床统一接口）
+│   ├── map_service.py      #   方块地图事件消费/持久化/快照合成（QueQiao-Map-Web）
+│   ├── web_api.py          #   仪表盘 Web API（servers/terminal/monitor/map/panel…）
 │   └── renderer.py         #   状态/玩家列表文本渲染
 ├── handlers/
 │   └── commands.py         #   命令业务逻辑 + 自定义指令 + 多服务器选择
@@ -249,14 +251,44 @@ SecurityError**，不是返回空——任何「try/catch 包一下就能用」�
   绑定值取 `event_session_ref(event).canonical`——群消息收敛成群号，避免把
   发送者 ID 写进配置。
 
-### 4.9 自检
+### 4.9 方块地图（改 pages/dashboard/map-view.js 或 map_service.py 前必读）
 
-改动纯逻辑后运行 `python3 tests_offline.py`（47 组断言，覆盖配置解析、事件模型、
+数据规范以 QueQiao-Map-Web 的 `docs/INTEGRATION.md` 为准，四类事件按 `sub_type` 路由：
+`map_dimensions` / `map_palette` / `map_tile`（`zlib-pal8` + `sha1` 去重）/ `player_move`。
+
+后端不变式：
+
+- 维度映射：内置 `MAP_DIMENSIONS` 之外的 registry key 走 `_dim_short()` 动态登记，
+  短名随 `meta.json` 的 `dyn_dims` 持久化；非法 key 一律不入库（`MAP_REGISTRY_KEY_RE`）
+- 调色板 **id 变化或颜色内容变化**都要清空该服瓦片并 bump revision（否则新旧量化混用出错色）
+- 合成快照时把调色板里下标 > 0 的**纯黑**抬成 `(0, 0, 1)`（`_BLACK_FIX`）：纯黑在快照里
+  是「未探索」占位色，不抬就会被画成暗色遮罩
+- 快照必须带 `revision`（无数据态恒 0），前端靠它做「未变化即跳过重解码」的指纹
+- 瓦片/调色板持久化到 `data_dir/map/<安全服务器名>/`，节流 ≥5s 落盘，`terminate` 时 flush
+
+前端（闪烁禁忌，都是踩过的坑）：
+
+- **画布尺寸绝不能抖动**：`.map-canvas-wrap` 是 `flex:1`，任何兄弟元素高度变化都会改变
+  画布位图尺寸并触发重绘（肉眼 = 地图跳一下 / 闪一下）。因此 `.map-status-row` 是
+  **定高 32px + nowrap + overflow:hidden**，CSS 守卫在 `tests_offline.py` 组 52；
+  新增状态行/工具行元素时必须定高，长文案用省略号
+- 解码走离屏 canvas，成功后一次性换入 `state.tileCanvas`；解码失败或空瓦片时**保留旧帧**，
+  不得 `clearRect` 清屏、不得把空瓦片写成红色错误状态行
+- 快照指纹优先用 `revision`；轮询 / 同值文本（状态行、数据源徽标、更新时间）一律幂等写入
+- 同一服务器视图重复激活（`renderServerTabs` 每 tick 调 `activateServerTab`）不得重启轮询定时器
+- 维度下拉由 `status.dimensions` + `status.dimension_names` 驱动（`applyDimensions()`），
+  清单未变化时零 DOM 操作；当前维度被移除时回落主世界
+
+### 4.10 自检
+
+改动纯逻辑后运行 `python3 tests_offline.py`（54 组断言，覆盖配置解析、事件模型、
 转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、
 端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、
 conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、
 会话 UMO 归一/隔离对话同群全成员匹配、目标会话去重、自消息与重复投递拦截、
-`mc target` 免 UMO 绑定）。
+`mc target` 免 UMO 绑定、方块地图无数据契约与 API、zlib-pal8 解码/sha1 去重/
+调色板换 id 与换色清瓦片/纯黑夹紧/快照 revision/模组维度动态登记与持久化、
+地图事件旁路消费与 `map_enabled` 门控、前端动态维度与状态行定高守卫）。
 
 ---
 
