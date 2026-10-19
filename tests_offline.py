@@ -6054,3 +6054,574 @@ assert "mc target add [编号]" in _help51, _help51
 assert "mc target remove [编号]" in _help51, _help51
 print("OK  UMO 归一 / 隔离对话同群全成员匹配 / 目标去重只发一次 / "
       "回声与重复投递拦截 / mc target 绑定收敛规范群号且免热重载 / help 同步")
+
+# ============================================================
+# 52. 方块地图占位数据服务 + status/snapshot/teleport API + map_dimension 偏好
+# ============================================================
+print("\n=== 52. 方块地图占位数据服务 + status/snapshot/teleport API + map_dimension 偏好 ===")
+import base64 as _b6452
+import math as _math52
+import shutil as _sh52
+
+from astrbot_plugin_minecraft_queqiao_next.services.map_service import MapService as _MS52
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
+    MAP_DIMENSIONS as _MDIMS52,
+    MAP_FALLBACK_Y as _MFY52,
+    MAP_PLACEHOLDER_REASON as _MPR52,
+    MAP_SOURCE_PLACEHOLDER as _MSP52,
+)
+
+# ---- (a) 占位快照直测：结构自洽 + 契约字段 ----
+_ms52 = _MS52()
+_snap52 = _ms52.snapshot("Srv52", "overworld", at=1000.0)
+assert _snap52 is not None
+assert set(_snap52.keys()) == {
+    "server_name", "dimension", "updated_at", "source", "cell", "bbox", "tiles", "players",
+}, _snap52.keys()
+assert _snap52["server_name"] == "Srv52" and _snap52["dimension"] == "overworld"
+assert isinstance(_snap52["updated_at"], float)
+assert _snap52["source"] == _MSP52 == "placeholder"
+assert _snap52["cell"] == {"size": 1, "unit": "block"}
+_bbox52 = _snap52["bbox"]
+assert _bbox52 == [-112, -112, 112, 112], _bbox52  # minx/minz 含、maxx/maxz 不含
+_w52 = _bbox52[2] - _bbox52[0]
+_h52 = _bbox52[3] - _bbox52[1]
+_raw52 = _b6452.b64decode(_snap52["tiles"])
+assert len(_raw52) == _w52 * _h52 * 3, "tiles base64 解码长度必须等于 W*H*3"
+
+_pl52 = _snap52["players"]
+assert 2 <= len(_pl52) <= 3, _pl52
+for _p52 in _pl52:
+    assert set(_p52.keys()) == {"name", "x", "y", "z", "dimension", "explored_radius"}, _p52
+    assert isinstance(_p52["name"], str) and _p52["name"]
+    for _f52 in ("x", "y", "z"):
+        assert isinstance(_p52[_f52], float) and _math52.isfinite(_p52[_f52]), _p52
+    assert _p52["dimension"] in _MDIMS52
+    assert isinstance(_p52["explored_radius"], int) and _p52["explored_radius"] > 0
+assert any(p["dimension"] == "overworld" for p in _pl52), "主世界必须分到假玩家"
+
+_st52 = _ms52.status("Srv52")
+assert set(_st52.keys()) == {
+    "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
+}, _st52.keys()
+assert _st52["enabled"] is True and _st52["source"] == "placeholder"
+assert _st52["reason"] == _MPR52
+assert _st52["dimensions"] == ["overworld", "nether", "the_end"]
+
+# ---- (b) 未探索全黑 / 玩家半径已探索 / 确定性与实时移动 / 桩不消费 ----
+
+def _pixel52(snap, bx, bz):
+    """bbox 内方块坐标 (bx,bz) -> 行优先 RGB 三元组。"""
+    raw = _b6452.b64decode(snap["tiles"])
+    bb = snap["bbox"]
+    k = ((int(bz) - bb[1]) * (bb[2] - bb[0]) + (int(bx) - bb[0])) * 3
+    return (raw[k], raw[k + 1], raw[k + 2])
+
+assert _pixel52(_snap52, -112, -112) == (0, 0, 0), "bbox 远角必须未探索（RGB 全黑）"
+_black52 = 0
+for _k52 in range(0, len(_raw52), 3):
+    if _raw52[_k52] == _raw52[_k52 + 1] == _raw52[_k52 + 2] == 0:
+        _black52 += 1
+assert 0 < _black52 < _w52 * _h52, f"应同时存在未探索(黑)与已探索(非黑)像素: {_black52}"
+for _p52 in [p for p in _pl52 if p["dimension"] == "overworld"]:
+    _px52 = max(_bbox52[0], min(_bbox52[2] - 1, int(round(_p52["x"]))))
+    _pz52 = max(_bbox52[1], min(_bbox52[3] - 1, int(round(_p52["z"]))))
+    assert _pixel52(_snap52, _px52, _pz52) != (0, 0, 0), "玩家所在位置必须已探索"
+
+_ms52b = _MS52()
+assert _ms52b.snapshot("Srv52", "overworld", at=1000.9)["tiles"] == _snap52["tiles"], (
+    "同 (server,dimension,时间桶) 不同实例必须完全一致（确定性）"
+)
+_snap52d = _ms52.snapshot("Srv52", "overworld", at=1337.0)
+assert [(p["x"], p["z"]) for p in _snap52d["players"]] != [(p["x"], p["z"]) for p in _pl52], (
+    "假玩家应随时间沿轨迹移动"
+)
+assert _ms52.snapshot("Srv52", "sky") is None, "非法维度应返回 None"
+
+# （原「接桩方法」子块随 apply_chunk_update/set_players 桩删除而移除：
+# 真实数据接收已由 handle_event/_apply_* 取代，见 map_service 自测）
+
+# ---- (c) API：路由条件注册 + status/snapshot 响应 ----
+class _Ctx52:
+    def __init__(self):
+        self.routes = []
+
+    def register_web_api(self, path, handler, methods, desc):
+        self.routes.append((path, handler, methods, desc))
+
+
+class _Inst52:
+    """ServerInstance 桩：统一记录指令序列，可配置为无回执（两通道皆不可用）。"""
+
+    def __init__(self, pos_output=None, no_channel=False):
+        self.commands = []
+        self.pos_output = pos_output
+        self.no_channel = no_channel
+
+    async def execute_command(self, command):
+        self.commands.append(command)
+        if self.pos_output is None:
+            return "A has the following entity data: [12.5d, 65.0d, -3.5d]"
+        return self.pos_output
+
+    async def execute_command_with_channel(self, command):
+        self.commands.append(command)
+        if self.no_channel:
+            return None, ""
+        return f"Done: {command}", "queqiao"
+
+
+_inst52 = _Inst52()
+_insts52 = {"Srv52": _inst52, "Srv52off": _Inst52(), "Srv52nc": _Inst52(no_channel=True)}
+_sm52 = types.SimpleNamespace(get=lambda name: _insts52.get(name))
+_ctx52 = _Ctx52()
+from astrbot_plugin_minecraft_queqiao_next.services.web_api import WebApiController as _WAC52
+import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa52
+
+_wac52 = _WAC52(
+    _ctx52, _sm52, None, None, None,
+    {"Srv52": None, "Srv52off": None},
+    None, None, None, None, _ms52,
+)
+_wac52.register_routes()
+assert len(_ctx52.routes) == 34, f"31 基础 + 3 地图路由, 实际 {len(_ctx52.routes)}"
+_rp52 = [r[0] for r in _ctx52.routes]
+for _p52 in (
+    "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/status",
+    "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/snapshot",
+    "/astrbot_plugin_minecraft_queqiao_next/map/<server_name>/teleport",
+):
+    assert _p52 in _rp52, _p52
+
+_res52 = asyncio.run(_wac52.get_map_status("Srv52"))
+assert _res52["status_code"] == 200
+_d52 = _res52["data"]
+assert set(_d52.keys()) == {
+    "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
+}
+assert _d52["reason"] == _MPR52 and _d52["dimensions"] == ["overworld", "nether", "the_end"]
+assert asyncio.run(_wac52.get_map_status("Nope"))["status_code"] == 404
+assert asyncio.run(_wac52.get_map_status("Srv52off"))["status_code"] == 200, (
+    "未连接服务器也应返回占位状态"
+)
+
+_wa52.request.query = {"dimension": "nether"}
+_res52n = asyncio.run(_wac52.get_map_snapshot("Srv52"))
+assert _res52n["status_code"] == 200 and _res52n["data"]["dimension"] == "nether"
+assert len(_b6452.b64decode(_res52n["data"]["tiles"])) == _w52 * _h52 * 3
+_wa52.request.query = {"dimension": "sky"}
+assert asyncio.run(_wac52.get_map_snapshot("Srv52"))["status_code"] == 400, "非法维度应 400"
+_wa52.request.query = {}
+_res52d = asyncio.run(_wac52.get_map_snapshot("Srv52"))
+assert _res52d["status_code"] == 200 and _res52d["data"]["dimension"] == "overworld", (
+    "缺省 dimension 应回落主世界"
+)
+assert asyncio.run(_wac52.get_map_snapshot("Nope"))["status_code"] == 404
+
+# ---- (d) teleport：指令构造 / y 回落 / 无回执不重发 / 参数校验 ----
+
+def _tp52(payload, server="Srv52"):
+    async def _json52(default=None):
+        return payload
+    _wa52.request.json = _json52
+    return asyncio.run(_wac52.teleport_map_player(server))
+
+_r52 = _tp52({"player": "A", "target": "B"})
+assert _r52["status_code"] == 200
+_d52 = _r52["data"]
+assert _d52["success"] is True and _d52["command"] == "tp A B" and _d52["channel"] == "queqiao"
+assert _inst52.commands == ["tp A B"], "传送指令只允许发送一次"
+_inst52.commands.clear()
+
+_r52 = _tp52({"player": "A", "x": 100.5, "z": -20.5, "y": 71.0})
+assert _r52["data"]["command"] == "tp A 100.5 71.0 -20.5"
+assert _inst52.commands == ["tp A 100.5 71.0 -20.5"], "显式 y 时不得执行 data get"
+_inst52.commands.clear()
+
+_r52 = _tp52({"player": "A", "x": 100.5, "z": -20.5})
+assert _inst52.commands == ["data get entity A Pos", "tp A 100.5 65.0 -20.5"], _inst52.commands
+assert _r52["data"]["command"] == "tp A 100.5 65.0 -20.5", (
+    "y 缺省应取 data get Pos 解析值 65.0"
+)
+_inst52.commands.clear()
+
+_inst52.pos_output = "unknown player A"  # 解析失败 -> 回落海平面
+_r52 = _tp52({"player": "A", "x": 0, "z": 0})
+assert _r52["data"]["command"] == f"tp A 0.0 {float(_MFY52):.1f} 0.0", _r52["data"]["command"]
+_inst52.pos_output = None
+_inst52.commands.clear()
+
+_r52 = _tp52({"player": "A", "target": "B"}, server="Srv52nc")
+assert _r52["status_code"] == 200
+_d52 = _r52["data"]
+assert (_d52["success"], _d52["output"], _d52["channel"], _d52["command"]) == (
+    False, None, "", "tp A B",
+), _d52
+assert _insts52["Srv52nc"].commands == ["tp A B"], "无回执=结果未知，严禁重发（AGENTS §4.5）"
+
+for _bad52 in (
+    {"player": "", "target": "B"},
+    {"player": "A", "target": "   "},
+    {"player": "A"},
+    {"player": "A", "x": "abc", "z": 1},
+    {"player": "A", "x": float("nan"), "z": 1},
+    {"player": "A", "x": float("inf"), "z": 1},
+    {"player": "A", "x": True, "z": 1},
+    {"player": "A", "x": 1},
+    {"player": "A", "x": 1, "z": 2, "y": "bad"},
+):
+    assert _tp52(_bad52)["status_code"] == 400, _bad52
+
+_r52 = _tp52({"player": "A", "x": "100.5", "z": "-20.5", "y": "71"})
+assert _r52["data"]["command"] == "tp A 100.5 71.0 -20.5", "WebUI 字符串坐标应防御式容忍"
+assert _tp52({"player": "A", "target": "B"}, server="Nope")["status_code"] == 404
+
+# ---- (e) 面板偏好白名单新增 map_dimension ----
+from astrbot_plugin_minecraft_queqiao_next.services.panel_prefs import PanelPrefsStore as _PP52
+
+_mdir52 = pathlib.Path("/tmp/queqiao_test_mapprefs52")
+if _mdir52.exists():
+    _sh52.rmtree(_mdir52)
+_mdir52.mkdir(parents=True, exist_ok=True)
+_pp52 = _PP52(_mdir52)
+_wac52p = _WAC52(
+    _Ctx52(), _sm52, None, None, None, {"Srv52": None},
+    None, None, _pp52, None, _ms52,
+)
+
+
+def _prefs52(payload):
+    async def _jsonp52(default=None):
+        return payload
+    _wa52.request.json = _jsonp52
+    return asyncio.run(_wac52p.set_panel_prefs())
+
+
+assert _prefs52({"map_dimension": "nether"})["data"]["prefs"]["map_dimension"] == "nether"
+assert _prefs52({"map_dimension": " the_end "})["data"]["prefs"]["map_dimension"] == "the_end", (
+    "应容忍前后空白"
+)
+for _bad52 in ({"map_dimension": "sky"}, {"map_dimension": 42}, {"map_dimension": None}):
+    assert _prefs52(_bad52)["status_code"] == 400, _bad52
+assert _pp52.all()["map_dimension"] == "the_end", "非法值不得覆盖已存偏好"
+
+print("OK  占位快照结构/尺寸自洽 / 未探索全黑且玩家半径已探索 / 同桶确定+跨桶移动 / "
+      "status+snapshot+teleport API（404/400/无回执不重发/y 回落/坐标格式化）/ "
+      "map_dimension 白名单")
+
+print("\n=== 53. MapService 真实数据链路（zlib-pal8 / sha1 去重 / 换盘清空 / 容错 / 玩家时效 / 持久化） ===")
+import base64 as _b6453
+import hashlib as _hs53
+import shutil as _sh53
+import time as _time53
+import zlib as _zl53
+
+from astrbot_plugin_minecraft_queqiao_next.services.map_service import (
+    MAP_BBOX_HALF as _MBH53,
+    MapService as _MS53,
+    safe_server_name as _SSN53,
+)
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
+    MAP_DIMENSIONS as _MDIMS53,
+    MAP_EVENT_SUB_TYPES as _MEST53,
+    MAP_PLAYER_STALE_SECONDS as _MPS53,
+    MAP_PLACEHOLDER_REASON as _MPR53,
+    MAP_REGISTRY_DIM_SHORT as _MRDS53,
+    MAP_SOURCE_PLACEHOLDER as _MSP53,
+    MAP_SOURCE_REAL as _MSR53,
+    MAP_SUB_DIMENSIONS as _MSD53,
+    MAP_SUB_PALETTE as _MSPa53,
+    MAP_SUB_PLAYER_MOVE as _MSPm53,
+    MAP_SUB_TILE as _MSTi53,
+    MAP_TILE_FORMAT as _MTF53,
+)
+
+_OW53, _NE53, _TE53 = _MDIMS53  # 面板短名走 MAP_DIMENSIONS 常量，不硬编码
+_RDIM53 = {v: k for k, v in _MRDS53.items()}  # 短名 → registry 维度名
+
+
+def _ev53(sub_type, **data):
+    """地图 notice 事件：payload 原始透传（含 sub_type），模型字段兜底。"""
+    return QueQiaoEvent.from_dict({
+        "post_type": "notice", "event_name": "QueQiaoServerNoticeEvent",
+        "sub_type": sub_type, **data,
+    })
+
+
+def _tile53(cx, cz, size, cells, fmt=_MTF53):
+    """合成 zlib-pal8 瓦片条目：cells 为 {(区块内px,pz): 调色板下标}。"""
+    side = size * 16
+    raw = bytearray(side * side)
+    for (_pxc53, _pzc53), _idx53 in cells.items():
+        raw[_pzc53 * side + _pxc53] = _idx53
+    comp = _zl53.compress(bytes(raw))
+    return {
+        "format": fmt, "cx": cx, "cz": cz, "size": size,
+        "b64": _b6453.b64encode(comp).decode("ascii"),
+        "sha1": _hs53.sha1(comp).hexdigest(),
+    }
+
+
+def _snap_px53(snap, bx, bz):
+    """bbox 内方块坐标 (bx,bz) → 行优先 RGB 三元组（与 52 组 _pixel52 同口径）。"""
+    raw = _b6453.b64decode(snap["tiles"])
+    bb = snap["bbox"]
+    k = ((int(bz) - bb[1]) * (bb[2] - bb[0]) + (int(bx) - bb[0])) * 3
+    return (raw[k], raw[k + 1], raw[k + 2])
+
+
+# ---- (a) 端到端：调色板 + 瓦片（负 cx/cz、size=8 与 1）→ bbox 并集与 RGB 落位 ----
+_ms53 = _MS53()
+_srv53 = "Srv53"
+assert _ms53.handle_event(_srv53, _ev53(
+    _MSPa53, id="p1", colors=["#000000", "#FF0000", "#00FF00"])) is True
+_tile_ev53 = _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(-8, -8, 8, {(0, 0): 1, (127, 127): 2}),  # 负坐标大瓦片对角
+    _tile53(0, 0, 1, {(0, 0): 2, (15, 15): 1}),      # size=1 覆盖写
+    _tile53(1, 0, 1, {(0, 0): 5, (1, 1): 2}),        # 下标越界项（5≥3色）
+])
+assert _ms53.handle_event(_srv53, _tile_ev53) is True
+_snap53 = _ms53.snapshot(_srv53)  # 默认维度 = MAP_DEFAULT_DIMENSION
+assert _snap53["source"] == _MSR53
+assert _snap53["cell"] == {"size": 1, "unit": "block"}
+assert _snap53["bbox"] == [-128, -128, 32, 16], _snap53["bbox"]  # 瓦片块级矩形并集
+assert len(_b6453.b64decode(_snap53["tiles"])) == 160 * 144 * 3
+assert _snap53["players"] == [], "无 player_move 事件时不应出现玩家"
+assert _snap_px53(_snap53, -128, -128) == (255, 0, 0), "8x8 瓦片 (0,0) 下标1 → 红"
+assert _snap_px53(_snap53, -1, -1) == (0, 255, 0), "8x8 瓦片 (127,127) 下标2 → 绿"
+assert _snap_px53(_snap53, 0, 0) == (0, 255, 0), "后写 1x1 瓦片应覆盖同区域"
+assert _snap_px53(_snap53, 15, 15) == (255, 0, 0)
+assert _snap_px53(_snap53, 1, 1) == (0, 0, 0), "下标 0（未设置）必须是 RGB(0,0,0)"
+assert _snap_px53(_snap53, 16, 0) == (0, 0, 0), "下标越界（≥调色板长度）→ 保持黑"
+assert _snap_px53(_snap53, 17, 1) == (0, 255, 0)
+assert _snap_px53(_snap53, -128, 15) == (0, 0, 0), "bbox 内无瓦片覆盖处 → 黑"
+_st53 = _ms53._states[_srv53]
+assert set(_st53.tiles.keys()) == {(_OW53, -8, -8, 8), (_OW53, 0, 0, 1), (_OW53, 1, 0, 1)}
+_sts53 = _ms53.status(_srv53)
+assert _sts53["source"] == _MSR53 and _sts53["reason"] == ""
+assert _sts53["dimensions"] == list(_MDIMS53), "未上报 map_dimensions 时 status 给全量"
+
+# ---- (b) sha1 去重：同位置同摘要重发幂等；不同内容覆盖并 bump revision ----
+_rev53 = dict(_st53.revision)
+assert _ms53.handle_event(_srv53, _tile_ev53) is True  # 字节级相同载荷重发
+assert dict(_st53.revision) == _rev53, "同 (cx,cz,size) 同摘要不得 bump revision"
+assert _ms53.snapshot(_srv53)["tiles"] == _snap53["tiles"], "去重后快照必须逐字节不变"
+assert _ms53.handle_event(_srv53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1, (15, 15): 1})])) is True
+assert _st53.revision[_OW53] == _rev53[_OW53] + 1, "同位置新内容应 bump revision"
+_snap53b = _ms53.snapshot(_srv53)
+assert _snap53b["tiles"] != _snap53["tiles"]
+assert _snap_px53(_snap53b, 0, 0) == (255, 0, 0), "同位置覆盖写应生效"
+
+# ---- (c) 调色板换 id → 全服瓦片清空 → 「真实流零瓦片」全黑小窗 ----
+_srvsw53 = "Srv53sw"
+_ms53.handle_event(_srvsw53, _ev53(_MSPa53, id="q1", colors=["#000000", "#FF0000"]))
+assert _ms53.handle_event(_srvsw53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1})])) is True
+assert _ms53.handle_event(_srvsw53, _ev53(_MSPm53, players=[{
+    "uuid": "u-53sw", "nickname": "Steve53", "x": 100.0, "y": 64.0, "z": -40.0,
+    "dimension": _RDIM53[_OW53]}])) is True
+_stsw53 = _ms53._states[_srvsw53]
+_revsw53 = _stsw53.revision[_OW53]
+assert _ms53.handle_event(_srvsw53, _ev53(
+    _MSPa53, id="q2", colors=["#000000", "#0000FF"])) is True
+assert _stsw53.tiles == {}, "调色板 id 变化必须清空该服全部瓦片"
+assert _stsw53.dim_tile_count == {}
+assert _stsw53.revision[_OW53] == _revsw53 + 1, "清空应 bump revision 使快照缓存失效"
+assert _stsw53.ever_tile is True, "ever_tile 是历史标记，清空后仍走真实流而非占位"
+_tnow53 = _time53.time()
+_snapsw53 = _ms53.snapshot(_srvsw53, _OW53, at=_tnow53 + 1.0)
+assert _snapsw53["source"] == _MSR53
+assert _snapsw53["bbox"] == [100 - _MBH53, -40 - _MBH53, 100 + _MBH53, -40 + _MBH53], (
+    "零瓦片小窗应以最新鲜玩家为中心 ±MAP_BBOX_HALF")
+_rawsw53 = _b6453.b64decode(_snapsw53["tiles"])
+assert len(_rawsw53) == (2 * _MBH53) * (2 * _MBH53) * 3
+assert set(_rawsw53) == {0}, "真实流零瓦片必须全黑（未探索）"
+assert [p["name"] for p in _snapsw53["players"]] == ["Steve53"]
+assert _snapsw53["players"][0]["explored_radius"] == 0
+_snapsw53b = _ms53.snapshot(_srvsw53, _OW53, at=_tnow53 + 6.0)
+assert _snapsw53b["players"] == [], "玩家过期后小窗回退 (0,0) 中心"
+assert _snapsw53b["bbox"] == [-_MBH53, -_MBH53, _MBH53, _MBH53]
+
+# ---- (d) 容错：非法瓦片/非法调色板 → handle_event 不抛、瓦片被拒 ----
+_srvbad53 = "Srv53bad"
+_ms53.handle_event(_srvbad53, _ev53(_MSPa53, id="b1", colors=["#000000", "#123456"]))
+_compbad53 = b"this-is-not-deflate"
+_complen53 = _zl53.compress(b"\x02" * 100)
+assert _ms53.handle_event(_srvbad53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    dict(_tile53(0, 0, 1, {(0, 0): 1}), format="zlib-rgb24"),   # 编码不支持
+    {"format": _MTF53, "cx": 1, "cz": 0, "size": 1,
+     "b64": "not!!b64!!", "sha1": "0" * 40},                    # b64 非法
+    {"format": _MTF53, "cx": 2, "cz": 0, "size": 1,
+     "b64": _b6453.b64encode(_compbad53).decode("ascii"),
+     "sha1": _hs53.sha1(_compbad53).hexdigest()},               # zlib 非法
+    dict(_tile53(3, 0, 1, {(0, 0): 1}),
+         b64=_b6453.b64encode(_complen53).decode("ascii"),
+         sha1=_hs53.sha1(_complen53).hexdigest()),              # 解码长度 ≠ side*side
+])) is True
+_stbad53 = _ms53._states[_srvbad53]
+assert _stbad53.tiles == {}, "四类非法瓦片必须全部被拒"
+assert _stbad53.ever_tile is False, "从未存过瓦片不得进入真实流"
+assert _ms53.status(_srvbad53)["source"] == _MSP53
+assert _ms53.status(_srvbad53)["reason"] == _MPR53, "占位文案引用常量符号"
+# 非法调色板色 → 整盘拒绝（不建状态、不落 palette）；瓦片先于调色板 → 丢弃
+_srvpal53 = "Srv53pal"
+assert _ms53.handle_event(_srvpal53, _ev53(_MSPa53, id="x1", colors=["#000000", "red"])) is True
+assert _srvpal53 not in _ms53._states, "任一非法色项应整盘拒绝，连状态都不应建立"
+assert _ms53.handle_event(_srvpal53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1})])) is True
+_stpal53 = _ms53._states[_srvpal53]
+assert _stpal53.palette_colors == [], "非法调色板不得被部分接受"
+assert _stpal53.tiles == {}, "调色板未到时的瓦片应丢弃"
+# 未知 sub_type → handle_event 返回 False（main 层拦截守卫见 54 组）
+assert _ms53.handle_event("x", _ev53("map_future")) is False
+
+# ---- (e) 玩家时效：超 MAP_PLAYER_STALE_SECONDS 判缺席 ----
+_srvply53 = "Srv53ply"
+_ms53.handle_event(_srvply53, _ev53(_MSPa53, id="c1", colors=["#000000", "#00FF00"]))
+_ms53.handle_event(_srvply53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1})]))
+assert _ms53.handle_event(_srvply53, _ev53(_MSPm53, players=[{
+    "uuid": "u-9", "nickname": "Nine53", "x": 8.5, "y": 70.0, "z": 2.5,
+    "dimension": _RDIM53[_OW53]}])) is True
+_t053 = _time53.time()
+_snap53p = _ms53.snapshot(_srvply53, _OW53, at=_t053 + 4.0)
+assert [p["name"] for p in _snap53p["players"]] == ["Nine53"]
+assert (_snap53p["players"][0]["x"], _snap53p["players"][0]["z"]) == (8.5, 2.5)
+assert _ms53.snapshot(
+    _srvply53, _OW53, at=_t053 + 4.0 + _MPS53)["players"] == [], (
+    "超 MAP_PLAYER_STALE_SECONDS 的玩家应缺席")
+assert _ms53.snapshot(_srvply53, _NE53)["players"] == [], (
+    "玩家只应出现在其上报维度")
+
+# ---- (f) map_dimensions：registry 短名映射 / 未知维度忽略 / 未知维度瓦片被拒 ----
+_srvdm53 = "Srv53dm"
+_ms53.handle_event(_srvdm53, _ev53(_MSPa53, id="d1", colors=["#000000", "#0000FF"]))
+_ms53.handle_event(_srvdm53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1})]))
+assert _ms53.handle_event(_srvdm53, _ev53(_MSD53, dimensions=[
+    _RDIM53[_OW53], _RDIM53[_NE53], "custom:galaxy"])) is True
+assert _ms53.status(_srvdm53)["dimensions"] == [_OW53, _NE53], (
+    "上报维度按 MAP_REGISTRY_DIM_SHORT 映射并按 MAP_DIMENSIONS 顺序去重，未知忽略")
+assert _ms53.handle_event(_srvdm53, _ev53(_MSTi53, dimension="custom:galaxy", tiles=[
+    _tile53(0, 0, 1, {(0, 0): 1})])) is True
+assert {k[0] for k in _ms53._states[_srvdm53].tiles} == {_OW53}, (
+    "无法映射维度的瓦片不得入库")
+assert _ms53.handle_event(_srvdm53, _ev53(
+    _MSD53, dimensions=["custom:galaxy"])) is True
+assert _ms53.status(_srvdm53)["dimensions"] == [], "全未知上报 → 无可映射维度"
+
+# ---- (g) 持久化往返：tmp data_dir 写事件 → flush() → 新实例磁盘加载一致 ----
+_dir53 = pathlib.Path(tempfile.mkdtemp(prefix="qmap53_"))
+try:
+    _srvrt53 = "Srv 53/特殊"  # 含空格/斜杠/中文，验证安全目录名往返
+    _msg53 = _MS53(_dir53)
+    _msg53.handle_event(_srvrt53, _ev53(_MSPa53, id="r9", colors=["#000000", "#ABCDEF"]))
+    assert _msg53.handle_event(_srvrt53, _ev53(_MSTi53, dimension=_RDIM53[_NE53], tiles=[
+        _tile53(-1, 2, 1, {(3, 4): 1})])) is True
+    _msg53.handle_event(_srvrt53, _ev53(_MSD53, dimensions=[_RDIM53[_NE53]]))
+    _msg53.handle_event(_srvrt53, _ev53(_MSPm53, players=[{
+        "uuid": "u-rt", "nickname": "Rt53", "x": 0.0, "y": 0.0, "z": 0.0,
+        "dimension": _RDIM53[_NE53]}]))
+    _msg53.flush()
+    _sdir53 = _dir53 / "map" / _SSN53(_srvrt53)
+    assert (_sdir53 / "meta.json").is_file(), "meta.json 必须落盘"
+    assert (_sdir53 / f"{_NE53}.json").is_file(), "瓦片按维度落盘"
+    _msg53b = _MS53(_dir53)  # 模拟 AstrBot 重启：新实例从磁盘恢复
+    _old53 = _msg53.snapshot(_srvrt53, _NE53, at=1000.0)
+    _new53 = _msg53b.snapshot(_srvrt53, _NE53, at=1000.0)
+    assert _new53["source"] == _old53["source"] == _MSR53
+    assert _new53["bbox"] == _old53["bbox"], "重启后 bbox 必须一致"
+    assert _new53["tiles"] == _old53["tiles"], "重启后瓦片合成结果必须逐字节一致"
+    assert [p["name"] for p in _old53["players"]] == ["Rt53"]
+    assert _new53["players"] == [], "玩家是瞬时态，不落盘"
+    _stprt53 = _msg53b.status(_srvrt53)
+    assert _stprt53["source"] == _MSR53 and _stprt53["reason"] == ""
+    assert _stprt53["dimensions"] == [_NE53], "上报维度也应随 meta.json 恢复"
+finally:
+    _sh53.rmtree(_dir53, ignore_errors=True)
+print("OK  zlib-pal8 端到端（负坐标/多 size/下标0与越界→黑）/ sha1 去重幂等+新内容 bump / "
+      "换调色板清空全服瓦片+全黑小窗（玩家中心）/ 非法 format·b64·zlib·长度·调色板整盘拒 / "
+      "瓦片先于调色板丢弃 / 玩家时效缺席与维度过滤 / map_dimensions 映射与未知忽略 / "
+      "flush+新实例持久化往返（安全目录名）")
+
+print("\n=== 54. main 拦截四类地图事件（旁路消费，不进指标/终端日志/AI/转发） ===")
+import astrbot_plugin_minecraft_queqiao_next.main as _m54
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC54
+from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MC54
+
+# 拦截守卫：main 判定集合必须恰为四类 sub_type 常量（禁硬编码字符串）
+assert _MEST53 == frozenset({_MSD53, _MSPa53, _MSTi53, _MSPm53})
+
+
+class _TL54:
+    def __init__(self):
+        self.rows = []
+
+    def append(self, server, kind, text):
+        self.rows.append((server, kind, text))
+
+
+class _BR54:
+    def __init__(self):
+        self.calls = []
+
+    async def forward_event(self, server_name, config, event):
+        self.calls.append((server_name, event.event_name))
+        return False
+
+
+class _Map54:
+    """替身 map_service：记录 handle_event 调用并委托真实实例消费。"""
+
+    def __init__(self):
+        self.calls = []
+        self.real = _MS53()
+
+    def handle_event(self, server_name, event):
+        self.calls.append((server_name, event.sub_type))
+        return self.real.handle_event(server_name, event)
+
+
+_plugin54 = _m54.MinecraftQueQiaoPlugin.__new__(_m54.MinecraftQueQiaoPlugin)
+_plugin54._configs = {"Srv54": _SC54.from_dict(
+    {"server": {"server_name": "Srv54"},
+     "message": {"target_sessions": ["umo:GroupMessage:9"]}})}
+_plugin54.metrics = _MC54()
+_plugin54.terminal_logs = _TL54()
+_plugin54.message_bridge = _BR54()
+_plugin54.map_service = _Map54()
+
+_MAP_EV54 = [
+    _ev53(_MSPa53, id="m1", colors=["#000000", "#FF7700"]),
+    _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[_tile53(0, 0, 1, {(0, 0): 1})]),
+    _ev53(_MSPm53, players=[{"uuid": "u-54", "nickname": "Map54", "x": 1.0,
+                             "y": 64.0, "z": 2.0, "dimension": _RDIM53[_OW53]}]),
+    _ev53(_MSD53, dimensions=[_RDIM53[_OW53]]),
+]
+
+
+async def _run54():
+    for _e54 in _MAP_EV54:
+        await _plugin54._on_queqiao_event("Srv54", _e54)
+    # 对照：普通聊天事件不应被地图分支拦截，必须进入互通转发链路
+    await _plugin54._on_queqiao_event("Srv54", QueQiaoEvent.from_dict({
+        "post_type": "message", "event_name": "PlayerChatEvent",
+        "player": {"nickname": "Talker"}, "message": "hello world"}))
+
+
+asyncio.run(_run54())
+assert _plugin54.map_service.calls == [
+    ("Srv54", _MSPa53), ("Srv54", _MSTi53), ("Srv54", _MSPm53), ("Srv54", _MSD53)], (
+    "四类地图事件必须全部交给 map_service.handle_event")
+assert _plugin54.terminal_logs.rows == [("Srv54", "chat", "<Talker> hello world")], (
+    "地图事件不得进终端日志，仅对照聊天事件进一条")
+assert _plugin54.message_bridge.calls == [("Srv54", "PlayerChatEvent")], (
+    "四类地图事件不得进 message_bridge，对照聊天事件必须进")
+assert sum(_plugin54.metrics.events_by_type.values()) == 1, "地图事件不得进指标计数"
+assert [h.event_type for h in _plugin54.metrics._history] == ["chat"]
+_snap54 = _plugin54.map_service.real.snapshot("Srv54")
+assert _snap54["source"] == _MSR53, "handle_event 应真实消费（旁路而非丢弃）"
+assert [p["name"] for p in _snap54["players"]] == ["Map54"]
+print("OK  MAP_EVENT_SUB_TYPES 恰为四类常量 / 四类事件走 _on_queqiao_event 被 "
+      "map_service 消费且不进终端日志·转发·指标 / 聊天对照事件链路不受影响")

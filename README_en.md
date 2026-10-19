@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft Queqiao Next</h1>
 <p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.6-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.6.7-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
@@ -19,6 +19,7 @@ Connects Minecraft servers to AstrBot through the [QueQiao](https://github.com/1
 - **Server management**: status queries, online player list, remote command execution
 - **Web Dashboard**: view server status, performance monitoring (TPS / latency), the bridge terminal in real time and connection observability (reconnect count / phase / limit alert, API timeout count), with quick broadcast and command console
 - **Image-bed panel**: a dedicated “🖼️ 图床” tab at the right end of the dashboard's server-tab bar to manage image transfer directly — the master switch, upload timeout, full add/edit/delete of image bed entries, the built-in HTTP service runtime state, and a one-click test upload that runs the whole chain with a built-in 1×1 test image
+- **Block-map panel**: the “🗺️ 方块地图” panel below the feature settings — top-block map of every explored area with live player positions, drag-to-pan, wheel / button zoom and overworld / nether / the-end dimension switching; right-click a player avatar to teleport that player to another player, or right-click an empty map point to teleport a chosen player to those coordinates (map data comes from the server-side QueQiao-Map-Web mod's live stream; servers without a map stream show deterministic placeholder demo data)
 - **Manage servers from the panel**: create servers, enable / disable, edit connection settings and target sessions, or delete entries right from the dashboard; disabled servers stay visible as grey cards and can be enabled with one click — saving backs up the config and hot-reloads automatically
 - **AI chat**: talk to the AI in-game with the `ai` prefix; replies are sent privately to the player
 - **Multiple servers**: connect several servers, each with independent forwarding settings
@@ -92,6 +93,19 @@ Below the server cards and the performance-monitoring panel, the dashboard has a
 - **Message forwarding** (per server): toggles for chat / join-leave / death / achievement forwarding, the chat message format (`{player}` `{message}` `{display_name}` placeholders), the group→MC trigger prefix (empty = forward everything) and the target sessions (one UMO per line; `mc target add` in the target group also works). These are the same settings as in the “Message-forwarding configuration” table; saving takes effect immediately without rebuilding connections (target-session changes rebuild the match index right away)
 - **Terminal window** (per server): how many days of interop-terminal logs to load (0–30, default 2 = today plus yesterday, 0 = keep all shards). Stored at the top level of the config entry — the same setting as `terminal_days` in the WebUI; saving takes effect immediately without rebuilding connections
 - Monitoring parameters themselves (enabled, sample interval, realtime rate, retention, TPS command, latency probe, default view) still live in the “⚙ 设置” dialog of the monitoring panel
+
+### Dashboard block-map panel
+
+Below the feature-settings panel there is a “🗺️ 方块地图” (block map) panel, shown only while a single server tab is active; the canvas renders each dimension's explored area as chunk-level block tiles:
+
+- **Real map data**: the panel shows the server's live map, rendered as chunk-level tiles, over the overworld / nether / the end only. The data comes from the server-side mod [QueQiao-Map-Web](https://github.com/Chen-Mengze/QueQiao-Map-Web): the server must also run the [QueQiao](https://github.com/17TheWord/QueQiao) messaging mod, set `enabled: true` in QueQiao-Map-Web's `config/queqiao-mapext.yml`, and use a `server_name` that matches this server entry's plugin configuration. Map events ride the existing QueQiao connection automatically — **zero extra plugin-side configuration**
+- **Placeholder demo data**: servers that never push a map stream get a deterministic placeholder snapshot keyed by server + dimension (including moving demo players) with a placeholder badge; once the mod is installed the panel switches to real data automatically — the frontend and the API stay unchanged
+- **Maps survive AstrBot restarts**: the palette and chunk tiles are persisted under the local `data_dir/map/` and reloaded on restart; when the (re)started server switches palette id, the old tiles are cleared and rebuilt as the mod re-pushes them
+- **Explored areas**: only pushed chunk tiles are rendered (1 cell = 1 block, block colours come from the server-side palette; placeholders use built-in water / beach / grass / forest / stone / snow colours); unexplored areas stay dark
+- **Map controls**: drag to pan, wheel zoom centered on the pointer (0.25–16 px per block), + / − / reset buttons and manual refresh
+- **Dimension switch**: overworld / nether / the-end buttons; the current dimension is remembered by the backend (`map_dimension` panel preference) across refreshes and devices
+- **Live positions**: online players are drawn as avatar + name markers that move smoothly (under the real stream these come from the mod's player-position heartbeats; players idle for more than about 5 seconds are removed)
+- **Right-click teleport** (executed over the QueQiao / RCON command channel, sent exactly once — never auto-resent): right-click a player marker on the map (or a player chip on the server card) to teleport that player to another player; right-click an empty map point to teleport a chosen player to those coordinates (Y is read from the player's current position first, falling back to 64). Results (success / failure with the exact command) appear in the panel status line and are recorded as system logs in the bridge terminal
 
 ### Top-right “⚙ 设置” global-settings dialog
 

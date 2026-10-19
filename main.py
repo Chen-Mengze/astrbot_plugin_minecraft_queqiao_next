@@ -20,6 +20,7 @@ from .core.constants import (
     DEFAULT_IMAGE_HTTP_HOST,
     DEFAULT_IMAGE_HTTP_PORT,
     DEFAULT_IMAGE_UPLOAD_TIMEOUT,
+    MAP_EVENT_SUB_TYPES,
     MAX_TARGET_SESSIONS,
     MESSAGE_DEDUPE_WINDOW,
     PLUGIN_DATA_DIR,
@@ -43,6 +44,7 @@ from .services.image_bed import (
     ImageBedUploader,
     ImageBedUploaderGroup,
 )
+from .services.map_service import MapService
 from .services.message_bridge import (
     MessageBridge,
     build_chatimage_code,
@@ -90,6 +92,7 @@ class MinecraftQueQiaoPlugin(Star):
         self.terminal_logs = TerminalLogStore(data_dir)
         self.monitor = MonitorCollector(data_dir, self.server_manager)
         self.panel_prefs = PanelPrefsStore(data_dir)
+        self.map_service = MapService(data_dir)
         self.command_handler = CommandHandler(
             self.server_manager, self.binding_service, self.renderer
         )
@@ -108,6 +111,7 @@ class MinecraftQueQiaoPlugin(Star):
             self.monitor,
             self.panel_prefs,
             self,
+            map_service=self.map_service,
         )
         self.web_api.register_routes()
         self._init_task: asyncio.Task | None = None
@@ -324,6 +328,10 @@ class MinecraftQueQiaoPlugin(Star):
                 await self._init_task
 
         await self._stop_runtime()
+
+        # 地图数据收尾：刷写尚未落盘的维度/调色板/瓦片/玩家状态
+        self.map_service.flush()
+
         logger.info(f"[{PLUGIN_NAME}] 已关闭")
 
     async def _setup_image_services(self) -> None:
@@ -530,6 +538,12 @@ class MinecraftQueQiaoPlugin(Star):
         """处理来自鹊桥的事件：转发到会话，并识别 AI 聊天触发。"""
         config = self._configs.get(server_name)
         if config is None:
+            return
+
+        # 地图事件（QueQiao-Map-Web 四类 sub_type）交 MapService 旁路消费：
+        # 不进指标/终端日志/AI 触发/互通转发
+        if event.sub_type in MAP_EVENT_SUB_TYPES:
+            self.map_service.handle_event(server_name, event)
             return
 
         # 记录事件指标与持久化终端日志（网页未打开期间同样记录）；

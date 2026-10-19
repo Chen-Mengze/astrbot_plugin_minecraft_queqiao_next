@@ -171,6 +171,54 @@ MONITOR_AUTO_REFRESH_MAX = 3600
 # 延迟采不到时不值得为一个指标干等 10 秒（TPS 与状态另有来源）
 MONITOR_API_TIMEOUT = 5
 
+# ---- 方块地图（Web 面板游戏顶层方块地图） ----
+# 真实数据来自服务端 mod「QueQiao-Map-Web」推来的 4 类 sub_type 事件
+# （见下方 MAP_EVENT_SUB_TYPES），由 MapService.handle_event 旁路消费；
+# 无真实流时回退占位数据：快照由 services/map_service.py 的占位生成器按
+# (server_name, dimension) 种子确定性产出，source 为 placeholder。
+# 维度为白名单（URL query / 面板偏好 map_dimension 均按 MAP_DIMENSIONS
+# 校验），中文名映射供前端展示。自定义维度按事件动态登记（见
+# MAP_REGISTRY_DIM_SHORT）。
+MAP_SOURCE_PLACEHOLDER = "placeholder"
+MAP_PLACEHOLDER_REASON = (
+    "尚未收到该服务器的地图事件：需服务端安装 QueQiao-Map-Web mod 并在 "
+    "config/queqiao-mapext.yml 设 enabled: true，当前展示占位数据"
+)
+MAP_DIMENSIONS: tuple[str, ...] = ("overworld", "nether", "the_end")
+MAP_DEFAULT_DIMENSION = "overworld"
+MAP_DIMENSION_NAMES: dict[str, str] = {
+    "overworld": "主世界",
+    "nether": "下界",
+    "the_end": "末地",
+}
+# 传送：data get entity Pos 解析失败时的回落 Y（海平面）
+MAP_FALLBACK_Y = 64.0
+
+# QueQiao-Map-Web 四类 notice 事件的 sub_type（事件路由只看 sub_type）：
+# map_dimensions 维度清单 / map_palette 调色板（≤256 色）/
+# map_tile 瓦片批量（base64 + zlib 的 pal8 索引位图，sha1 去重）/
+# player_move 玩家位置心跳。
+MAP_SUB_DIMENSIONS = "map_dimensions"
+MAP_SUB_PALETTE = "map_palette"
+MAP_SUB_TILE = "map_tile"
+MAP_SUB_PLAYER_MOVE = "player_move"
+MAP_EVENT_SUB_TYPES: frozenset[str] = frozenset(
+    {MAP_SUB_DIMENSIONS, MAP_SUB_PALETTE, MAP_SUB_TILE, MAP_SUB_PLAYER_MOVE}
+)
+# 快照来源标识：真实流（mod 经鹊桥推来的数据）与占位互斥
+MAP_SOURCE_REAL = "queqiao-map-web"
+# map_tile 载荷的瓦片编码格式：调色板索引位图经 zlib 压缩
+MAP_TILE_FORMAT = "zlib-pal8"
+# 玩家位置时效（秒）：player_move 超过该时长未更新视为离线，从地图移除
+MAP_PLAYER_STALE_SECONDS = 5.0
+# 注册表维度名（minecraft:xxx）→ 插件内部短名（与 MAP_DIMENSIONS 对齐）；
+# 自定义维度不在表内，由 MapService 按事件里的维度名动态登记
+MAP_REGISTRY_DIM_SHORT: dict[str, str] = {
+    "minecraft:overworld": "overworld",
+    "minecraft:the_nether": "nether",
+    "minecraft:the_end": "the_end",
+}
+
 
 def prefix_matches(prefix: str, text: str) -> bool:
     """判断文本是否以指定前缀触发（词边界感知，字母部分不区分大小写）。

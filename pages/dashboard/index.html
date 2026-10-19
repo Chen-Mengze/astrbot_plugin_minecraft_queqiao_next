@@ -305,6 +305,43 @@
       </div>
     </section>
 
+    <!-- 方块地图面板（map-view.js）：canvas 瓦片渲染 + 拖拽平移/滚轮缩放 + 维度切换 +
+         右键自绘传送菜单。数据来自后端 MapService（map/<server>/status、snapshot、teleport）：
+         真实数据由服务端 QueQiao-Map-Web mod 经鹊桥推送，未收到事件时回退占位演示数据，
+         徽标按 status.source 显示；map_dimension 偏好走后端 panel_prefs 持久化（AGENTS §4.7）。
+         显隐由 app.js activateServerTab 派发的 queqiao:server-view-changed 事件驱动 -->
+    <section class="map-panel hidden" id="map-panel">
+      <div class="map-header">
+        <span class="map-title">🗺️ 方块地图</span>
+        <span class="map-badge" id="map-source-badge" title="首次状态拉取后按数据源自动更新：真实推送（QueQiao-Map-Web mod）或占位演示数据">地图数据源检测中…</span>
+        <span class="map-spacer"></span>
+        <span class="map-updated" id="map-updated"></span>
+      </div>
+      <div class="map-toolbar">
+        <div class="map-dims" id="map-dims" role="group" aria-label="地图维度切换">
+          <button type="button" class="map-dim-btn active" data-dim="overworld" title="主世界地图">主世界</button>
+          <button type="button" class="map-dim-btn" data-dim="nether" title="下界地图">下界</button>
+          <button type="button" class="map-dim-btn" data-dim="the_end" title="末地地图">末地</button>
+        </div>
+        <span class="map-spacer"></span>
+        <div class="map-zoom" role="group" aria-label="地图缩放">
+          <button type="button" class="btn btn-sm" id="map-zoom-out" title="缩小（每方块像素减小）">－</button>
+          <button type="button" class="btn btn-sm" id="map-zoom-in" title="放大（每方块像素增大）">＋</button>
+          <button type="button" class="btn btn-sm" id="map-reset" title="复位：回到整幅快照适配视图">复位</button>
+        </div>
+        <button type="button" class="btn btn-sm" id="map-refresh" title="立即刷新地图快照">↻ 刷新</button>
+      </div>
+      <div class="map-canvas-wrap" id="map-canvas-wrap">
+        <canvas id="map-canvas"></canvas>
+        <div class="map-empty hidden" id="map-empty"></div>
+      </div>
+      <div class="map-status-row">
+        <span id="map-cursor-info"></span>
+        <span class="map-spacer"></span>
+        <span id="map-status"></span>
+      </div>
+    </section>
+
     <section class="terminal-panel hidden" id="terminal-panel">
       <div class="terminal-header">
         <div class="terminal-title" id="terminal-title">互通终端</div>
@@ -413,6 +450,7 @@
 
   <script type="module" src="./app.js"></script>
   <script type="module" src="./config-view.js"></script>
+  <script type="module" src="./map-view.js"></script>
 
   <!-- 性能监控设置弹窗（监控参数仅在此维护，不走插件 WebUI 配置） -->
   <div class="modal-overlay hidden" id="monitor-settings-modal">

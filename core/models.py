@@ -392,6 +392,9 @@ class QueQiaoEvent:
 
     公共字段：timestamp / post_type / event_name / server_name /
     server_version / server_type / sub_type / message_id
+
+    payload 为原始字典透传，供地图事件等非白名单载荷读取
+    （前向兼容：未知字段不报错）。
     """
 
     event_name: str = ""
@@ -408,6 +411,7 @@ class QueQiaoEvent:
     command: str = ""
     death: QueQiaoTranslate = field(default_factory=QueQiaoTranslate)
     achievement: QueQiaoAchievement = field(default_factory=QueQiaoAchievement)
+    payload: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "QueQiaoEvent":
@@ -426,6 +430,7 @@ class QueQiaoEvent:
             command=_as_str(data.get("command")),
             death=QueQiaoTranslate.from_dict(data.get("death")),
             achievement=QueQiaoAchievement.from_dict(data.get("achievement")),
+            payload=dict(data),
         )
 
     @property

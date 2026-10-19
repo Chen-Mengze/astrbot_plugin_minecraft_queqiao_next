@@ -2802,3 +2802,226 @@ body {
 .config-view .settings-row {
   grid-template-columns: 180px 400px minmax(0, 1fr);
 }
+
+/* ==========================================================================
+   方块地图面板（#map-panel，map-view.js）：DOM 位于 #settings-panel 与
+   #terminal-panel 之间；grid 位次由本块接管——地图占 row 4、终端下移到 row 5
+   （.layout-main 前缀保证覆盖基础规则）。颜色全部复用既有变量（随 light/dark
+   自动切换），--map-* 是地图语义色、定义在面板上即随主题联动，无需分主题复制。
+   ========================================================================== */
+.layout-main .map-panel {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  height: 460px;
+  transition: border-color 0.2s ease;
+  --map-bg: var(--bg-tertiary);
+  /* 未探索区域 = 暗色遮罩（tiles 全 RGB 0 解码为透明，露出这一层底色） */
+  --map-unexplored: rgba(10, 14, 22, 0.62);
+  --map-border: var(--border-color);
+}
+
+/* 终端面板下移到第 5 行（覆盖基础规则的 grid-row: 4） */
+.layout-main .terminal-panel {
+  grid-row: 5;
+}
+
+.map-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.map-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 占位数据徽标：提醒地图数据接收/解析未实现（后端当前返回占位数据） */
+.map-badge {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--mc-yellow-bg);
+  color: var(--mc-yellow);
+  white-space: nowrap;
+}
+
+.map-spacer {
+  flex: 1 1 auto;
+}
+
+.map-updated {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.map-dims {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 3px;
+}
+
+.map-dim-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.map-dim-btn:hover {
+  color: var(--text-primary);
+}
+
+.map-dim-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.map-zoom {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.map-canvas-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#map-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none; /* pointer 拖拽不被浏览器手势打断 */
+}
+
+.map-canvas-wrap.panning #map-canvas {
+  cursor: grabbing;
+}
+
+.map-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.map-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  min-height: 28px;
+}
+
+#map-cursor-info {
+  font-variant-numeric: tabular-nums;
+}
+
+#map-status.ok {
+  color: var(--mc-green);
+}
+
+#map-status.err {
+  color: var(--mc-red);
+}
+
+/* 自绘右键菜单（浮层）：沙箱 iframe 禁用原生菜单/confirm，一律 DOM 实现；
+   地图画布空白处、玩家圆片与服务器卡片玩家胶囊共用同一风格 */
+.mcqq-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 180px;
+  max-width: 300px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+}
+
+.mcqq-context-title {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 10px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcqq-context-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.mcqq-context-item:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+
+.mcqq-context-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* 窄屏单列：地图/终端按 DOM 顺序（settings → map → terminal）自然堆叠，
+   必须用 .layout-main 前缀（specificity 高于基础规则里的 grid-row 覆盖） */
+@media (max-width: 900px) {
+  .layout-main .map-panel {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .layout-main .terminal-panel {
+    grid-row: auto;
+  }
+}

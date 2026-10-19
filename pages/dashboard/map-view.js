@@ -1,0 +1,755 @@
+/* Minecraft 鹊桥互通 - 方块地图面板（「功能设置」下方的「🗺️ 方块地图」）
+ * 通过 AstrBot Plugin Page Bridge 调用后端 Web API（真实数据由服务端 QueQiao-Map-Web mod
+ * 经鹊桥事件推送；未收到事件时后端回退确定性占位演示数据）：
+ *   GET  map/<server>/status → {server_name, enabled, source, reason,
+ *                               dimensions:[...], updated_at}
+ *   GET  map/<server>/snapshot?dimension=<overworld|nether|the_end>
+ *        → {server_name, dimension, updated_at, source,
+ *           cell:{size,unit}, bbox:[minx,minz,maxx,maxz],
+ *           tiles:<base64 W*H*3 RGB 行优先, W=maxx-minx, H=maxz-minz>,
+ *           players:[{name,x,y,z,dimension,explored_radius}]}
+ *        RGB 全 0 = 未探索（画暗色遮罩）；服务器不存在 404；dimension 非法 400
+ *   POST map/<server>/teleport {player:"A", target:"B"} | {player:"A", x, z, y?}
+ *        → {success, command, output, channel}；success=false 按失败在状态行提示
+ * 面板显隐由 app.js activateServerTab 派发的 CustomEvent('queqiao:server-view-changed',
+ * {detail:{serverName|null}}) 驱动：serverName 为 null（全局/图床/配置视图）时隐藏
+ * 面板并停止轮询；否则显示、按 map_dimension 恢复维度并每 7s 轮询 snapshot。
+ * map_dimension 持久化走后端 panel_prefs（AGENTS §4.7：沙箱 iframe 禁本地存储）。
+ * 右键为自绘 context-menu 浮层（受限 iframe 里 window.alert/confirm 被拦截）：
+ *   命中玩家标记 → 「将 A 传送到 → 其他玩家」；命中空白 → 「传送到 (x, z) → 在线玩家」。
+ * 对外暴露 window.__mcqqMapTeleportMenu(player, anchorEl, serverName) 供 app.js
+ * 服务器卡片玩家头像右键接线，两个入口共用同一菜单与请求实现。
+ */
+const PLUGIN_PATH = 'astrbot_plugin_minecraft_queqiao_next';
+
+const DIMENSIONS = ['overworld', 'nether', 'the_end'];
+const DIM_LABELS = { overworld: '主世界', nether: '下界', the_end: '末地' };
+const POLL_MS = 7000;          // snapshot 轮询间隔（契约要求 5~10s）
+const MIN_PX_PER_CELL = 0.25;  // 缩放下限：每方块像素
+const MAX_PX_PER_CELL = 16;    // 缩放上限：每方块像素
+const MOVE_ANIM_MS = 700;      // 玩家位置线性插值时长（体现实时移动）
+const HIT_RADIUS_PX = 16;      // 玩家标记命中半径（屏幕像素）
+
+const el = (id) => document.getElementById(id);
+const enc = encodeURIComponent;
+
+// Bridge 可能在模块加载后稍晚注入，每次调用现读（与 app.js 行为一致）
+function getBridge() {
+  return window.AstrBotPluginPage || null;
+}
+
+async function apiGet(endpoint, params = {}) {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.apiGet === 'function') {
+    return await bridge.apiGet(endpoint, params);
+  }
+  const query = new URLSearchParams(params).toString();
+  const url = `/api/v1/plugins/extensions/${PLUGIN_PATH}/${endpoint}${query ? '?' + query : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+  return await res.json();
+}
+
+async function apiPost(endpoint, body = {}) {
+  const bridge = getBridge();
+  if (bridge && typeof bridge.apiPost === 'function') {
+    return await bridge.apiPost(endpoint, body);
+  }
+  const url = `/api/v1/plugins/extensions/${PLUGIN_PATH}/${endpoint}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+  return await res.json();
+}
+
+/* ---------- 状态 ---------- */
+const state = {
+  serverName: null,      // 当前视图服务器；null = 面板隐藏
+  dimension: 'overworld',
+  dimTouched: false,     // 已从后端恢复或用户手动切过维度（恢复不再覆盖手动值）
+  status: null,          // map/<server>/status 最近响应
+  snapshot: null,        // 最近成功的 snapshot（原始对象）
+  tileCanvas: null,      // 瓦片像素解码后的离屏 canvas
+  tileError: '',
+  viewReady: false,      // 视图已按当前 (server, dimension) 适配过
+  pxPerCell: 4,          // 缩放：每方块像素
+  centerX: 0,            // 画布中心对应的世界方块坐标
+  centerZ: 0,
+  players: new Map(),    // name → {name, fromX/fromZ→toX/toZ 线性插值, curX/curZ, animStart}
+  avatars: new Map(),    // name → {img, failed}（crafatar 头像缓存）
+  pollTimer: null,
+  rafId: null,
+  statusTimer: null,
+};
+
+/* ---------- 面板状态行 / 空态遮罩 ---------- */
+function setMapStatus(text, kind = '') {
+  const node = el('map-status');
+  if (!node) return;
+  node.textContent = text;
+  node.classList.remove('ok', 'err');
+  if (kind) node.classList.add(kind);
+  if (state.statusTimer) clearTimeout(state.statusTimer);
+  if (text) {
+    state.statusTimer = setTimeout(() => {
+      node.textContent = '';
+      node.classList.remove('ok', 'err');
+    }, 10000);
+  }
+}
+
+/* 数据源徽标跟随 status.source：真实推送（QueQiao-Map-Web）/ 占位演示 */
+function updateSourceBadge(resp) {
+  const badge = el('map-source-badge');
+  if (!badge) return;
+  if (resp && resp.source === 'queqiao-map-web') {
+    badge.textContent = '真实数据：QueQiao-Map-Web';
+    badge.title = '地图数据由服务端 QueQiao-Map-Web mod 经鹊桥实时推送';
+  } else {
+    badge.textContent = '占位演示数据';
+    badge.title = (resp && resp.reason) || '尚未收到该服务器的地图事件，当前展示占位演示数据';
+  }
+}
+
+function setMapEmpty(text) {
+  const box = el('map-empty');
+  if (!box) return;
+  if (text) {
+    box.textContent = text;
+    box.classList.remove('hidden');
+  } else {
+    box.textContent = '';
+    box.classList.add('hidden');
+  }
+}
+
+function formatUpdatedAt(value) {
+  if (value === null || value === undefined || value === '') return '';
+  let date;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    date = new Date(value < 1e12 ? value * 1000 : value);
+  } else {
+    date = new Date(value);
+  }
+  if (Number.isNaN(date.getTime())) return `更新 ${String(value)}`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `更新 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/* ---------- 视图与坐标 ---------- */
+function canvasCssSize() {
+  const canvas = el('map-canvas');
+  if (!canvas) return { w: 0, h: 0 };
+  const rect = canvas.getBoundingClientRect();
+  return { w: rect.width, h: rect.height };
+}
+
+function fitView() {
+  const bbox = state.snapshot && state.snapshot.bbox;
+  if (!Array.isArray(bbox) || bbox.length !== 4) return;
+  const [minx, minz, maxx, maxz] = bbox.map(Number);
+  if (![minx, minz, maxx, maxz].every(Number.isFinite)) return;
+  const { w, h } = canvasCssSize();
+  const worldW = Math.max(1, maxx - minx);
+  const worldH = Math.max(1, maxz - minz);
+  const px = Math.min(w / worldW, h / worldH);
+  state.pxPerCell = Math.max(MIN_PX_PER_CELL, Math.min(MAX_PX_PER_CELL, px));
+  state.centerX = (minx + maxx) / 2;
+  state.centerZ = (minz + maxz) / 2;
+  state.viewReady = true;
+}
+
+function screenToWorld(clientX, clientY) {
+  const canvas = el('map-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const x = state.centerX + (clientX - rect.left - rect.width / 2) / state.pxPerCell;
+  const z = state.centerZ + (clientY - rect.top - rect.height / 2) / state.pxPerCell;
+  return { x, z };
+}
+
+function worldToScreenX(x, cw) { return (x - state.centerX) * state.pxPerCell + cw / 2; }
+function worldToScreenZ(z, ch) { return (z - state.centerZ) * state.pxPerCell + ch / 2; }
+
+function zoomAt(clientX, clientY, factor) {
+  const before = screenToWorld(clientX, clientY);
+  const next = Math.max(MIN_PX_PER_CELL, Math.min(MAX_PX_PER_CELL, state.pxPerCell * factor));
+  if (next === state.pxPerCell) return;
+  state.pxPerCell = next;
+  // 缩放后把锚点世界坐标挪回指针下，实现「以指针为中心缩放」
+  const rect = el('map-canvas').getBoundingClientRect();
+  state.centerX = before.x - (clientX - rect.left - rect.width / 2) / state.pxPerCell;
+  state.centerZ = before.z - (clientY - rect.top - rect.height / 2) / state.pxPerCell;
+  requestDraw();
+}
+
+/* ---------- 瓦片解码（base64 → 离屏 canvas；RGB 全 0 = 透明，露出暗色底） ---------- */
+function decodeTiles(base64, bbox) {
+  if (!base64 || typeof base64 !== 'string') throw new Error('tiles 字段缺失');
+  if (!Array.isArray(bbox) || bbox.length !== 4) throw new Error('bbox 字段缺失');
+  const w = Math.round(bbox[2] - bbox[0]);
+  const h = Math.round(bbox[3] - bbox[1]);
+  if (w <= 0 || h <= 0) throw new Error('地图范围为空');
+  const binary = atob(base64);
+  if (binary.length < w * h * 3) throw new Error(`tiles 长度不足（${binary.length} < ${w * h * 3}）`);
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const r = binary.charCodeAt(i * 3);
+    const g = binary.charCodeAt(i * 3 + 1);
+    const b = binary.charCodeAt(i * 3 + 2);
+    const o = i * 4;
+    if (r === 0 && g === 0 && b === 0) {
+      data[o + 3] = 0; // 未探索：透明，露出暗色遮罩底
+    } else {
+      data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+    }
+  }
+  const off = document.createElement('canvas');
+  off.width = w;
+  off.height = h;
+  off.getContext('2d').putImageData(new ImageData(data, w, h), 0, 0);
+  return off;
+}
+
+/* ---------- 玩家标记：头像缓存 + 线性插值 ---------- */
+function avatarFor(name) {
+  let rec = state.avatars.get(name);
+  if (rec) return rec;
+  rec = { img: new Image(), failed: false };
+  state.avatars.set(name, rec);
+  rec.img.onload = () => requestDraw();
+  rec.img.onerror = () => { rec.failed = true; requestDraw(); };
+  rec.img.src = `https://crafatar.com/avatars/${enc(name)}?size=32&default=MHF_Steve&overlay`;
+  return rec;
+}
+
+function mergePlayers(snapshot) {
+  const now = performance.now();
+  const seen = new Set();
+  for (const raw of snapshot.players || []) {
+    if (!raw || typeof raw.name !== 'string' || !raw.name) continue;
+    const nx = Number(raw.x);
+    const nz = Number(raw.z);
+    if (!Number.isFinite(nx) || !Number.isFinite(nz)) continue;
+    seen.add(raw.name);
+    const prev = state.players.get(raw.name);
+    if (prev) {
+      prev.fromX = Number.isFinite(prev.curX) ? prev.curX : prev.toX;
+      prev.fromZ = Number.isFinite(prev.curZ) ? prev.curZ : prev.toZ;
+      prev.toX = nx;
+      prev.toZ = nz;
+      prev.animStart = now;
+    } else {
+      state.players.set(raw.name, {
+        name: raw.name, fromX: nx, fromZ: nz, toX: nx, toZ: nz,
+        curX: nx, curZ: nz, animStart: now,
+      });
+    }
+  }
+  for (const name of Array.from(state.players.keys())) {
+    if (!seen.has(name)) state.players.delete(name);
+  }
+}
+
+/* ---------- 绘制 ---------- */
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return (v && v.trim()) || fallback;
+}
+
+function drawMap() {
+  const canvas = el('map-canvas');
+  if (!canvas) return false;
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.getBoundingClientRect();
+  const cw = rect.width;
+  const ch = rect.height;
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.fillStyle = cssVar('--map-bg', '#161d29');
+  ctx.fillRect(0, 0, cw, ch);
+
+  const snap = state.snapshot;
+  const bbox = snap && Array.isArray(snap.bbox) ? snap.bbox.map(Number) : null;
+  let animating = false;
+
+  if (bbox && bbox.every(Number.isFinite) && state.tileCanvas) {
+    const [minx, minz, maxx, maxz] = bbox;
+    const dx = worldToScreenX(minx, cw);
+    const dz = worldToScreenZ(minz, ch);
+    const dw = (maxx - minx) * state.pxPerCell;
+    const dh = (maxz - minz) * state.pxPerCell;
+    // 未探索区域：bbox 范围先铺暗色遮罩，瓦片里的透明像素露出它
+    ctx.fillStyle = cssVar('--map-unexplored', '#2a3446');
+    ctx.fillRect(dx, dz, dw, dh);
+    if (dw > 0.5 && dh > 0.5) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(state.tileCanvas, 0, 0, state.tileCanvas.width, state.tileCanvas.height,
+        dx, dz, dw, dh);
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.strokeStyle = cssVar('--map-border', 'rgba(148,163,184,0.25)');
+    ctx.lineWidth = 1;
+    ctx.strokeRect(dx, dz, dw, dh);
+  }
+
+  const now = performance.now();
+  for (const p of state.players.values()) {
+    const t = Math.min(1, (now - p.animStart) / MOVE_ANIM_MS);
+    p.curX = p.fromX + (p.toX - p.fromX) * t;
+    p.curZ = p.fromZ + (p.toZ - p.fromZ) * t;
+    if (t < 1) animating = true;
+    const sx = worldToScreenX(p.curX, cw);
+    const sz = worldToScreenZ(p.curZ, ch);
+    if (sx < -40 || sx > cw + 40 || sz < -40 || sz > ch + 40) continue;
+    const r = 11;
+    // 头像圆片：crafatar 皮肤头，加载失败回落首字母圆形
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sx, sz, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = cssVar('--bg-tertiary', '#1f2937');
+    ctx.fill();
+    ctx.clip();
+    const av = avatarFor(p.name);
+    if (!av.failed && av.img.complete && av.img.naturalWidth > 0) {
+      ctx.drawImage(av.img, sx - r, sz - r, r * 2, r * 2);
+    } else {
+      ctx.fillStyle = cssVar('--text-primary', '#e2e8f0');
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.name.slice(0, 2).toUpperCase(), sx, sz + 0.5);
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(sx, sz, r + 1.5, 0, Math.PI * 2);
+    ctx.strokeStyle = cssVar('--accent', '#38bdf8');
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // 名字标签（深底描边保证两种主题可读）
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.strokeText(p.name, sx, sz + r + 4);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(p.name, sx, sz + r + 4);
+  }
+  return animating;
+}
+
+function requestDraw() {
+  if (state.rafId !== null) return;
+  state.rafId = requestAnimationFrame(() => {
+    state.rafId = null;
+    const panel = el('map-panel');
+    if (state.serverName && panel && !panel.classList.contains('hidden')) {
+      const animating = drawMap();
+      if (animating) requestDraw();
+    }
+  });
+}
+
+function resizeCanvas() {
+  const canvas = el('map-canvas');
+  const wrap = el('map-canvas-wrap');
+  if (!canvas || !wrap) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  if (w <= 0 || h <= 0) return;
+  const bw = Math.round(w * dpr);
+  const bh = Math.round(h * dpr);
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
+  canvas.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); // 之后按 CSS 像素作图
+  if (state.snapshot && !state.viewReady) fitView();
+  requestDraw();
+}
+
+/* ---------- API 拉取 ---------- */
+async function fetchStatus() {
+  if (!state.serverName) return;
+  const serverAtFetch = state.serverName;
+  try {
+    const resp = await apiGet(`map/${enc(serverAtFetch)}/status`);
+    if (state.serverName !== serverAtFetch) return;
+    state.status = resp;
+    updateSourceBadge(resp);
+    if (resp && resp.enabled === false) {
+      setMapEmpty(`地图数据源未启用：${resp.reason || '后端未提供原因'}`);
+    }
+  } catch (e) {
+    if (state.serverName !== serverAtFetch) return;
+    state.status = null;
+    if (!state.tileCanvas) setMapEmpty(`地图状态获取失败：${e.message}`);
+  }
+}
+
+async function fetchSnapshot() {
+  if (!state.serverName) return;
+  const serverAtFetch = state.serverName;
+  const dimAtFetch = state.dimension;
+  try {
+    const resp = await apiGet(`map/${enc(serverAtFetch)}/snapshot`, { dimension: dimAtFetch });
+    // 快速切维度/切服务器时丢弃过期响应
+    if (state.serverName !== serverAtFetch || state.dimension !== dimAtFetch) return;
+    if (resp && resp.dimension && resp.dimension !== dimAtFetch) return;
+    state.snapshot = resp;
+    state.tileError = '';
+    try {
+      state.tileCanvas = decodeTiles(resp.tiles, resp.bbox);
+    } catch (e) {
+      state.tileCanvas = null;
+      state.tileError = e.message;
+    }
+    if (!state.viewReady) fitView();
+    mergePlayers(resp);
+    const updated = el('map-updated');
+    if (updated) updated.textContent = formatUpdatedAt(resp.updated_at);
+    if (state.tileCanvas) setMapEmpty('');
+    else setMapEmpty(`瓦片解码失败：${state.tileError}`);
+    requestDraw();
+  } catch (e) {
+    if (state.serverName !== serverAtFetch) return;
+    setMapStatus(`快照获取失败：${e.message}`, 'err');
+    if (!state.tileCanvas) setMapEmpty(`地图数据获取失败：${e.message}`);
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  fetchStatus();
+  fetchSnapshot();
+  state.pollTimer = setInterval(() => {
+    if (document.hidden) return; // 页签不可见不轮询
+    fetchSnapshot();
+  }, POLL_MS);
+}
+
+function stopPolling() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+/* ---------- 自绘右键菜单（沙箱 iframe 禁用 window.alert/confirm 与原生菜单） ---------- */
+let activeMenu = null;
+
+function closeMenu() {
+  if (!activeMenu) return;
+  activeMenu.remove();
+  activeMenu = null;
+  document.removeEventListener('mousedown', onDocMouseDown, true);
+  document.removeEventListener('keydown', onDocKeyDown, true);
+}
+
+function onDocMouseDown(e) {
+  if (activeMenu && !activeMenu.contains(e.target)) closeMenu();
+}
+
+function onDocKeyDown(e) {
+  if (e.key === 'Escape') closeMenu();
+}
+
+// items: [{label, onClick?} | {label, disabled:true}]；x/y 为视口坐标（position: fixed）
+function openMenu(title, items, x, y) {
+  closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'mcqq-context-menu';
+  const head = document.createElement('div');
+  head.className = 'mcqq-context-title';
+  head.textContent = title;
+  menu.appendChild(head);
+  for (const it of items) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mcqq-context-item';
+    btn.textContent = it.label;
+    if (it.disabled) {
+      btn.disabled = true;
+    } else {
+      btn.addEventListener('click', () => {
+        closeMenu();
+        if (it.onClick) it.onClick();
+      });
+    }
+    menu.appendChild(btn);
+  }
+  document.body.appendChild(menu);
+  // 先上屏量尺寸，再钳制到视口内
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  activeMenu = menu;
+}
+
+/* ---------- 传送（两个右键入口共用同一实现） ---------- */
+async function doTeleport(serverName, payload) {
+  const desc = typeof payload.target === 'string'
+    ? `${payload.player} → ${payload.target}`
+    : `${payload.player} → (${Number(payload.x).toFixed(1)}, ${Number(payload.z).toFixed(1)})`;
+  setMapStatus(`正在传送 ${desc}…`);
+  try {
+    const resp = await apiPost(`map/${enc(serverName)}/teleport`, payload);
+    const cmd = resp && resp.command ? `；指令: ${resp.command}` : '';
+    if (resp && resp.success === true) {
+      const ch = resp.channel ? `（通道: ${resp.channel}）` : '';
+      setMapStatus(`✓ 传送成功 ${desc}${cmd}${ch}`, 'ok');
+      fetchSnapshot();
+    } else {
+      const why = (resp && (resp.output || resp.message)) || '后端返回 success=false';
+      setMapStatus(`✕ 传送失败 ${desc}: ${why}${cmd}`, 'err');
+    }
+  } catch (e) {
+    setMapStatus(`✕ 传送请求失败 ${desc}: ${e.message}`, 'err');
+  }
+}
+
+// 菜单一：把 subject 传送到其他在线玩家（在线名单来自 snapshot）
+function openPlayerTeleportMenu(serverName, subject, x, y) {
+  const title = `将 ${subject} 传送到 →`;
+  openMenu(title, [{ label: '正在读取在线玩家…', disabled: true }], x, y);
+  apiGet(`map/${enc(serverName)}/snapshot`, { dimension: state.dimension })
+    .then((snap) => {
+      const others = ((snap && snap.players) || []).filter((p) => p && p.name && p.name !== subject);
+      const items = others.length
+        ? others.map((p) => ({
+            label: p.name,
+            onClick: () => doTeleport(serverName, { player: subject, target: p.name }),
+          }))
+        : [{ label: '没有其他在线玩家', disabled: true }];
+      openMenu(title, items, x, y);
+    })
+    .catch((e) => {
+      openMenu(title, [{ label: `读取玩家列表失败: ${e.message}`, disabled: true }], x, y);
+    });
+}
+
+// 菜单二：把在线玩家传送到地图点 (x, z)（点击处方块坐标，1 位小数）
+function openPointTeleportMenu(serverName, px, pz, x, y) {
+  const xs = px.toFixed(1);
+  const zs = pz.toFixed(1);
+  const title = `传送到 (${xs}, ${zs}) →`;
+  openMenu(title, [{ label: '正在读取在线玩家…', disabled: true }], x, y);
+  apiGet(`map/${enc(serverName)}/snapshot`, { dimension: state.dimension })
+    .then((snap) => {
+      const players = ((snap && snap.players) || []).filter((p) => p && p.name);
+      // 契约要求坐标 1 位小数：显示与 POST 一律用四舍五入后的值
+      const items = players.length
+        ? players.map((p) => ({
+            label: p.name,
+            onClick: () => doTeleport(serverName, { player: p.name, x: Number(xs), z: Number(zs) }),
+          }))
+        : [{ label: '当前没有在线玩家', disabled: true }];
+      openMenu(title, items, x, y);
+    })
+    .catch((e) => {
+      openMenu(title, [{ label: `读取玩家列表失败: ${e.message}`, disabled: true }], x, y);
+    });
+}
+
+/* ---------- 维度切换（map_dimension 走后端 panel_prefs，AGENTS §4.7） ---------- */
+function applyDimension(dim, { persist = true } = {}) {
+  if (!DIMENSIONS.includes(dim)) return;
+  state.dimTouched = true;
+  if (dim === state.dimension) {
+    syncDimButtons();
+    return;
+  }
+  state.dimension = dim;
+  syncDimButtons();
+  // 三个维度是三个世界：切维度清空旧快照并重新适配视图
+  state.viewReady = false;
+  state.snapshot = null;
+  state.tileCanvas = null;
+  state.players.clear();
+  setMapEmpty('正在加载地图…');
+  requestDraw();
+  fetchSnapshot();
+  if (persist) {
+    apiPost('panel/prefs', { map_dimension: dim }).catch((e) => {
+      console.warn('保存地图维度偏好失败:', e);
+    });
+  }
+}
+
+function syncDimButtons() {
+  document.querySelectorAll('#map-dims .map-dim-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.dim === state.dimension);
+  });
+}
+
+/* ---------- 视图联动（app.js activateServerTab 派发 queqiao:server-view-changed） ---------- */
+function setServer(serverName) {
+  closeMenu();
+  const panel = el('map-panel');
+  if (!panel) return;
+  if (!serverName) {
+    // 全局 / 图床 / 配置视图：隐藏面板、停止轮询（数据保留，切回即恢复）
+    state.serverName = null;
+    stopPolling();
+    panel.classList.add('hidden');
+    return;
+  }
+  const changed = serverName !== state.serverName;
+  state.serverName = serverName;
+  panel.classList.remove('hidden');
+  if (changed) {
+    state.status = null;
+    state.snapshot = null;
+    state.tileCanvas = null;
+    state.players.clear();
+    state.viewReady = false;
+    setMapEmpty('正在加载地图…');
+    setMapStatus('');
+    requestDraw();
+  }
+  startPolling();
+}
+
+/* ---------- 事件绑定 ---------- */
+function bindCanvas() {
+  const canvas = el('map-canvas');
+  const wrap = el('map-canvas-wrap');
+  if (!canvas || !wrap) return;
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (!state.snapshot) return;
+    zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.2 : 1 / 1.2);
+  }, { passive: false });
+
+  let panning = null;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    panning = { x: e.clientX, z: e.clientY };
+    canvas.setPointerCapture(e.pointerId);
+    wrap.classList.add('panning');
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (panning) {
+      state.centerX -= (e.clientX - panning.x) / state.pxPerCell;
+      state.centerZ -= (e.clientY - panning.z) / state.pxPerCell;
+      panning.x = e.clientX;
+      panning.z = e.clientY;
+      requestDraw();
+    }
+    const info = el('map-cursor-info');
+    if (info) {
+      if (state.snapshot) {
+        const w = screenToWorld(e.clientX, e.clientY);
+        info.textContent = `(${w.x.toFixed(1)}, ${w.z.toFixed(1)})`;
+      } else {
+        info.textContent = '';
+      }
+    }
+  });
+  const endPan = (e) => {
+    if (!panning) return;
+    panning = null;
+    wrap.classList.remove('panning');
+    if (e.pointerId !== undefined && canvas.hasPointerCapture &&
+        canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
+  };
+  canvas.addEventListener('pointerup', endPan);
+  canvas.addEventListener('pointercancel', endPan);
+  canvas.addEventListener('pointerleave', () => {
+    const info = el('map-cursor-info');
+    if (info) info.textContent = '';
+  });
+
+  // 右键：contextmenu + preventDefault，自绘浮层菜单（点击外部/Esc 关闭）
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (!state.serverName || !state.snapshot) return;
+    const rect = canvas.getBoundingClientRect();
+    // worldToScreenX/Z 返回画布局部坐标（0..宽/高），指针也换算到同一坐标系
+    const lx = e.clientX - rect.left;
+    const ly = e.clientY - rect.top;
+    let hit = null;
+    let best = HIT_RADIUS_PX;
+    for (const p of state.players.values()) {
+      const sx = worldToScreenX(p.curX, rect.width);
+      const sz = worldToScreenZ(p.curZ, rect.height);
+      const d = Math.hypot(sx - lx, sz - ly);
+      if (d <= best) { best = d; hit = p; }
+    }
+    if (hit) {
+      openPlayerTeleportMenu(state.serverName, hit.name, e.clientX, e.clientY);
+    } else {
+      const w = screenToWorld(e.clientX, e.clientY);
+      openPointTeleportMenu(state.serverName, w.x, w.z, e.clientX, e.clientY);
+    }
+  });
+
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => resizeCanvas()).observe(wrap);
+  }
+}
+
+function bindToolbar() {
+  document.querySelectorAll('#map-dims .map-dim-btn').forEach((btn) => {
+    btn.addEventListener('click', () => applyDimension(btn.dataset.dim));
+  });
+  const canvas = el('map-canvas');
+  el('map-zoom-in')?.addEventListener('click', () => {
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1.25);
+  });
+  el('map-zoom-out')?.addEventListener('click', () => {
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1 / 1.25);
+  });
+  el('map-reset')?.addEventListener('click', () => {
+    if (state.snapshot) { fitView(); requestDraw(); }
+  });
+  el('map-refresh')?.addEventListener('click', () => {
+    if (state.serverName) { fetchStatus(); fetchSnapshot(); }
+  });
+  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('scroll', closeMenu, true);
+}
+
+/* ---------- 启动（script type=module 在 </body> 前：DOM 已就绪） ---------- */
+function init() {
+  if (!el('map-panel')) return; // 页面没有地图面板区块时静默退出
+  syncDimButtons();
+  bindCanvas();
+  bindToolbar();
+  resizeCanvas();
+
+  window.addEventListener('queqiao:server-view-changed', (e) => {
+    setServer(e && e.detail && e.detail.serverName ? e.detail.serverName : null);
+  });
+
+  // app.js 服务器卡片玩家头像右键接线的 window 钩子
+  window.__mcqqMapTeleportMenu = (player, anchorEl, serverName) => {
+    const server = serverName || state.serverName;
+    if (!server || !anchorEl) return;
+    const rect = anchorEl.getBoundingClientRect();
+    openPlayerTeleportMenu(server, player, rect.left, rect.bottom + 4);
+  };
+
+  // 启动恢复维度：权威值在后端 panel_prefs（沙箱 iframe 无本地存储可用）
+  apiGet('panel/prefs')
+    .then((resp) => {
+      const dim = resp && resp.prefs && resp.prefs.map_dimension;
+      if (!state.dimTouched && DIMENSIONS.includes(dim)) applyDimension(dim, { persist: false });
+    })
+    .catch((e) => {
+      console.warn('拉取地图维度偏好失败:', e);
+    });
+}
+
+init();

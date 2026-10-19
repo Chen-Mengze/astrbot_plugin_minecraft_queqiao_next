@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +26,9 @@ from ..core.constants import (
     DEFAULT_REVERSE_PORT,
     DEFAULT_TERMINAL_DAYS,
     DEFAULT_WS_URL,
+    MAP_DEFAULT_DIMENSION,
+    MAP_DIMENSIONS,
+    MAP_FALLBACK_Y,
     PLUGIN_NAME,
     TERMINAL_DAYS_MAX,
     TERMINAL_DAYS_MIN,
@@ -89,6 +94,19 @@ def _as_int_clamped(value: Any, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, _as_int(value, default)))
 
 
+def _as_finite_float(value: Any) -> float | None:
+    """防御式有限浮点解析：非数字/布尔/nan/inf 一律返回 None（调用方据此回 400）。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _as_str_list(value: Any) -> list[str]:
     """把目标会话等字段规整为字符串列表（兼容单值/字符串/逗号分隔）。"""
     if isinstance(value, str):
@@ -151,6 +169,7 @@ if TYPE_CHECKING:
     from ..main import MinecraftQueQiaoPlugin
     from .binding import BindingService
     from .image_bed import ImageBedUploaderGroup
+    from .map_service import MapService
     from .monitor import MonitorCollector
     from .panel_prefs import PanelPrefsStore
     from .terminal_log import TerminalLogStore
@@ -171,6 +190,7 @@ class WebApiController:
         monitor: "MonitorCollector | None" = None,
         panel_prefs: "PanelPrefsStore | None" = None,
         plugin: "MinecraftQueQiaoPlugin | None" = None,
+        map_service: "MapService | None" = None,
     ) -> None:
         self.context = context
         self.server_manager = server_manager
@@ -182,6 +202,7 @@ class WebApiController:
         self.monitor = monitor
         self.panel_prefs = panel_prefs
         self.plugin = plugin
+        self.map_service = map_service
 
     def register_routes(self) -> None:
         """向 AstrBot Context 注册所有 Web API 路由。"""
@@ -335,6 +356,30 @@ class WebApiController:
                         self.clear_monitor_data,
                         ["POST"],
                         "清空某台服务器的性能监控采样数据（不可恢复）",
+                    ),
+                ]
+            )
+        # 方块地图路由：未注入 MapService 时（如旧测试桩）不注册，与 monitor 同款
+        if self.map_service is not None:
+            routes.extend(
+                [
+                    (
+                        "/map/<server_name>/status",
+                        self.get_map_status,
+                        ["GET"],
+                        "获取某台服务器的地图数据源状态（占位阶段：enabled/source/reason/维度列表）",
+                    ),
+                    (
+                        "/map/<server_name>/snapshot",
+                        self.get_map_snapshot,
+                        ["GET"],
+                        "获取某台服务器某维度的方块地图快照（tiles base64 RGB + 玩家位置）",
+                    ),
+                    (
+                        "/map/<server_name>/teleport",
+                        self.teleport_map_player,
+                        ["POST"],
+                        "地图传送玩家（传送到玩家或坐标；指令只发送一次不重发）",
                     ),
                 ]
             )
@@ -1825,7 +1870,8 @@ class WebApiController:
         ``auto_refresh``（顶部自动刷新开关，布尔）、
         ``auto_refresh_interval``（仪表盘自动刷新间隔秒数，10~3600）、
         ``settings_collapsed``（仪表盘「功能设置」面板是否折叠，布尔）、
-        ``active_tab``（当前打开的服务器视图，'all' 或服务器名，≤64 字符）。
+        ``active_tab``（当前打开的服务器视图，'all' 或服务器名，≤64 字符）、
+        ``map_dimension``（方块地图当前展示维度，overworld/nether/the_end 之一）。
         """
         if self.panel_prefs is None:
             return error_response("面板偏好存储未接入", status_code=503)
@@ -1875,6 +1921,17 @@ class WebApiController:
                 return error_response("active_tab 过长（≤64 字符）", status_code=400)
             if at_value:
                 fields["active_tab"] = at_value
+        if "map_dimension" in raw:
+            raw_md = raw["map_dimension"]
+            if not isinstance(raw_md, str):
+                return error_response("map_dimension 需为字符串", status_code=400)
+            md_value = raw_md.strip().lower()
+            if md_value not in MAP_DIMENSIONS:
+                return error_response(
+                    f"map_dimension 取值非法: {raw_md}（可选 {'/'.join(MAP_DIMENSIONS)}）",
+                    status_code=400,
+                )
+            fields["map_dimension"] = md_value
         if not fields:
             return json_response({"prefs": self.panel_prefs.all()})
         self.panel_prefs.update(fields)
@@ -2052,3 +2109,109 @@ class WebApiController:
             return error_response(f"服务器不存在: {server_name}", status_code=404)
         removed = self.monitor.clear_data(server_name)
         return json_response({"success": True, "server": server_name, "removed": removed})
+
+    # ---- 方块地图（真实流优先：QueQiao-Map-Web 事件；无事件时占位回退） ----
+
+    async def get_map_status(self, server_name: str) -> Any:
+        """某台服务器的地图数据源状态（enabled 当前恒为 True，source/reason 区分真实流与占位回退）。"""
+        if self.map_service is None:
+            return error_response("方块地图服务未接入", status_code=503)
+        if server_name not in self.configs and self.server_manager.get(server_name) is None:
+            return error_response(f"服务器不存在: {server_name}", status_code=404)
+        return json_response(self.map_service.status(server_name))
+
+    async def get_map_snapshot(self, server_name: str) -> Any:
+        """某维度方块地图快照；服务器未连接也返回占位数据（面板始终可渲染）。"""
+        if self.map_service is None:
+            return error_response("方块地图服务未接入", status_code=503)
+        if server_name not in self.configs and self.server_manager.get(server_name) is None:
+            return error_response(f"服务器不存在: {server_name}", status_code=404)
+        try:
+            dimension = str(request.query.get("dimension", MAP_DEFAULT_DIMENSION))
+        except (AttributeError, ValueError, TypeError):
+            dimension = MAP_DEFAULT_DIMENSION
+        dimension = dimension.strip().lower() or MAP_DEFAULT_DIMENSION
+        snapshot = self.map_service.snapshot(server_name, dimension)
+        if snapshot is None:
+            return error_response(
+                f"非法维度: {dimension}（可选 {'/'.join(MAP_DIMENSIONS)}）",
+                status_code=400,
+            )
+        return json_response(snapshot)
+
+    async def teleport_map_player(self, server_name: str) -> Any:
+        """地图传送：{"player": "A", "target": "B"} 或 {"player": "A", "x":, "z":, "y" 可选}。
+
+        经 execute_command_with_channel（鹊桥优先 / RCON 兜底）且只发送一次——
+        鹊桥超时 = 结果未知，严禁自动重试或换通道重发（AGENTS §4.5）。
+        y 缺省时先经 data get entity Pos 读当前 Y，失败回落 MAP_FALLBACK_Y；
+        坐标格式化为 1 位小数。
+        """
+        if self.map_service is None:
+            return error_response("方块地图服务未接入", status_code=503)
+        instance = self.server_manager.get(server_name)
+        if instance is None:
+            return error_response(f"服务器不存在: {server_name}", status_code=404)
+        payload = await request.json(default={}) or {}
+        if not isinstance(payload, dict):
+            return error_response("请求体需为 JSON 对象", status_code=400)
+        player = str(payload.get("player") or "").strip()
+        if not player:
+            return error_response("player 不能为空", status_code=400)
+        if "x" in payload or "z" in payload:
+            x = _as_finite_float(payload.get("x"))
+            z = _as_finite_float(payload.get("z"))
+            if x is None or z is None:
+                return error_response("坐标 x/z 需为数字", status_code=400)
+            if "y" in payload:
+                y = _as_finite_float(payload.get("y"))
+                if y is None:
+                    return error_response("坐标 y 需为数字", status_code=400)
+            else:
+                y = await self._lookup_player_y(server_name, instance, player)
+            command = f"tp {player} {x:.1f} {y:.1f} {z:.1f}"
+        else:
+            target = str(payload.get("target") or "").strip()
+            if not target:
+                return error_response("需提供 target 或坐标 x/z", status_code=400)
+            command = f"tp {player} {target}"
+        # 只发送一次：鹊桥超时=结果未知，此处不得重发（AGENTS §4.5）
+        output, channel = await instance.execute_command_with_channel(command)
+        if self.terminal_logs is not None:
+            if output is None:
+                self.terminal_logs.append(
+                    server_name,
+                    "system",
+                    f"地图传送未确认: /{command}（通道 {channel or '无'} 无回执）",
+                )
+            else:
+                self.terminal_logs.append(server_name, "system", f"地图传送: /{command}")
+        if output is None:
+            logger.warning(
+                f"[{PLUGIN_NAME}][{server_name}] 地图传送指令无回执"
+                f"（通道={channel or '无'}）: {command}"
+            )
+            return json_response(
+                {"success": False, "command": command, "output": None, "channel": channel}
+            )
+        return json_response(
+            {"success": True, "command": command, "output": output, "channel": channel}
+        )
+
+    async def _lookup_player_y(self, server_name: str, instance: Any, player: str) -> float:
+        """data get entity Pos 读取玩家当前 Y；任何失败回落海平面 MAP_FALLBACK_Y。"""
+        output = await instance.execute_command(f"data get entity {player} Pos")
+        if output:
+            block = re.search(r"\[([^\]]*)\]", output)
+            if block:
+                numbers = re.findall(r"-?\d+(?:\.\d+)?", block.group(1))
+                if len(numbers) >= 2:
+                    try:
+                        return float(numbers[1])
+                    except ValueError:
+                        pass
+        logger.warning(
+            f"[{PLUGIN_NAME}][{server_name}] 无法解析玩家 {player} 当前 Y，"
+            f"回落 {MAP_FALLBACK_Y}: {output!r}"
+        )
+        return float(MAP_FALLBACK_Y)

@@ -1317,6 +1317,14 @@ class DashboardApp {
     });
     // 玩家标签点击：快捷私聊/踢出/OP 管理，结果统一显示在互通终端
     document.querySelectorAll('.player-tag').forEach(tag => {
+      // 右键玩家胶囊：与地图相同的自绘传送菜单（map-view.js 提供实现；
+      // 沙箱 iframe 禁用原生菜单/confirm，菜单为 DOM 浮层，点外/Esc 关闭）
+      tag.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (typeof window.__mcqqMapTeleportMenu === 'function') {
+          window.__mcqqMapTeleportMenu(tag.dataset.player, tag, tag.dataset.server);
+        }
+      });
       tag.addEventListener('click', async () => {
         const player = tag.dataset.player;
         const serverName = tag.dataset.server;
@@ -1455,6 +1463,8 @@ class DashboardApp {
       if (panel) panel.classList.remove('hidden');
       this.stopTerminalPolling();
       this.stopRealtime();
+      // 地图面板联动：非服务器视图一律传 null（map-view.js 隐藏面板并停轮询）
+      window.dispatchEvent(new CustomEvent('queqiao:server-view-changed', { detail: { serverName: null } }));
       if (render) {
         // 首拉图床状态与条目（失败不阻断，面板内显示错误提示）
         this.loadImageBedStatus();
@@ -1477,6 +1487,8 @@ class DashboardApp {
       if (panel) panel.classList.remove('hidden');
       this.stopTerminalPolling();
       this.stopRealtime();
+      // 地图面板联动：配置视图同样隐藏地图（与图床分支同构）
+      window.dispatchEvent(new CustomEvent('queqiao:server-view-changed', { detail: { serverName: null } }));
       if (render) {
         // 携带进入前的视图，config-view.js 据此只渲染对应部分的表单
         window.dispatchEvent(new CustomEvent('queqiao:config-view-open', {
@@ -1504,6 +1516,11 @@ class DashboardApp {
       this.renderMonitorPanel();
       this.renderSettingsPanel();
     }
+    // 地图面板联动：单服务器视图传服务器名（map-view.js 显示面板、恢复维度、
+    // 开始轮询快照）；全局视图（'all'）传 null 隐藏地图
+    window.dispatchEvent(new CustomEvent('queqiao:server-view-changed', {
+      detail: { serverName: key === 'all' ? null : key },
+    }));
     // 自动刷新间隔/实时频率为每台服务器独立持久化的设置：切换视图后
     // 重读该服（或回落第一台）的后端值，顶部按钮与状态行实时跟随
     this.syncMonitorFreqFromBackend();
