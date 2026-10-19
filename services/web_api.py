@@ -367,7 +367,7 @@ class WebApiController:
                         "/map/<server_name>/status",
                         self.get_map_status,
                         ["GET"],
-                        "获取某台服务器的地图数据源状态（占位阶段：enabled/source/reason/维度列表）",
+                        "获取某台服务器的地图数据源状态（source/reason 区分真实流、无数据与已禁用）",
                     ),
                     (
                         "/map/<server_name>/snapshot",
@@ -1223,6 +1223,8 @@ class WebApiController:
                         entry.get("terminal_days"), DEFAULT_TERMINAL_DAYS,
                         TERMINAL_DAYS_MIN, TERMINAL_DAYS_MAX,
                     ),
+                    # 方块地图功能开关（每台服务器独立，条目顶层）
+                    "map_enabled": _as_bool(entry.get("map_enabled"), True),
                     # 消息转发配置（面板「功能设置」读写）：message 子对象按
                     # ServerConfig.from_dict 同源读取，缺省值与 schema 默认一致
                     "message": self._message_view(entry),
@@ -1410,6 +1412,9 @@ class WebApiController:
                 payload.get("terminal_days"), DEFAULT_TERMINAL_DAYS,
                 TERMINAL_DAYS_MIN, TERMINAL_DAYS_MAX,
             )
+        if "map_enabled" in payload:
+            # 方块地图开关（软配置键：命中 SOFT_CONFIG_KEYS 时走 apply_soft_config 免重载）
+            entry["map_enabled"] = _as_bool(payload.get("map_enabled"), True)
         # 消息转发配置（面板「功能设置」）：message 子对象按「显式出现」键
         # 合并，漏传不清空。字段名与 ServerConfig 属性 / main 层软更新键一致
         message_payload = payload.get("message")
@@ -2110,10 +2115,10 @@ class WebApiController:
         removed = self.monitor.clear_data(server_name)
         return json_response({"success": True, "server": server_name, "removed": removed})
 
-    # ---- 方块地图（真实流优先：QueQiao-Map-Web 事件；无事件时占位回退） ----
+    # ---- 方块地图（QueQiao-Map-Web 真实流；禁用或无事件时 source=none 空态） ----
 
     async def get_map_status(self, server_name: str) -> Any:
-        """某台服务器的地图数据源状态（enabled 当前恒为 True，source/reason 区分真实流与占位回退）。"""
+        """某台服务器的地图数据源状态（source/reason 区分真实流、无数据与已禁用）。"""
         if self.map_service is None:
             return error_response("方块地图服务未接入", status_code=503)
         if server_name not in self.configs and self.server_manager.get(server_name) is None:
@@ -2121,7 +2126,7 @@ class WebApiController:
         return json_response(self.map_service.status(server_name))
 
     async def get_map_snapshot(self, server_name: str) -> Any:
-        """某维度方块地图快照；服务器未连接也返回占位数据（面板始终可渲染）。"""
+        """某维度方块地图快照；禁用或无真实数据时返回 source=none 空态（无演示数据）。"""
         if self.map_service is None:
             return error_response("方块地图服务未接入", status_code=503)
         if server_name not in self.configs and self.server_manager.get(server_name) is None:
@@ -2149,6 +2154,9 @@ class WebApiController:
         """
         if self.map_service is None:
             return error_response("方块地图服务未接入", status_code=503)
+        config = self.configs.get(server_name)
+        if config is not None and not getattr(config, "map_enabled", True):
+            return error_response("该服务器的方块地图功能已关闭", status_code=400)
         instance = self.server_manager.get(server_name)
         if instance is None:
             return error_response(f"服务器不存在: {server_name}", status_code=404)

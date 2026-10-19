@@ -1,14 +1,17 @@
 /* Minecraft 鹊桥互通 - 方块地图面板（「功能设置」下方的「🗺️ 方块地图」）
  * 通过 AstrBot Plugin Page Bridge 调用后端 Web API（真实数据由服务端 QueQiao-Map-Web mod
- * 经鹊桥事件推送；未收到事件时后端回退确定性占位演示数据）：
- *   GET  map/<server>/status → {server_name, enabled, source, reason,
- *                               dimensions:[...], updated_at}
+ * 经鹊桥事件推送；无真实数据时后端返回 source:"none" + 安装引导 reason，不再有占位演示数据）：
+ *   GET  map/<server>/status → {server_name, enabled, source:"queqiao-map-web"|"none",
+ *                               reason, dimensions:[...], updated_at}
+ *        （enabled=false ⇒ 该服务器 map_enabled=false：隐藏整个面板并停止轮询）
  *   GET  map/<server>/snapshot?dimension=<overworld|nether|the_end>
  *        → {server_name, dimension, updated_at, source,
  *           cell:{size,unit}, bbox:[minx,minz,maxx,maxz],
  *           tiles:<base64 W*H*3 RGB 行优先, W=maxx-minx, H=maxz-minz>,
  *           players:[{name,x,y,z,dimension,explored_radius}]}
  *        RGB 全 0 = 未探索（画暗色遮罩）；服务器不存在 404；dimension 非法 400
+ *        无数据/禁用 → {server_name, dimension, updated_at, source:"none", reason,
+ *        cell:{size:1,unit:"block"}, bbox:null, tiles:"", players:[]}：清屏 + 安装引导空态
  *   POST map/<server>/teleport {player:"A", target:"B"} | {player:"A", x, z, y?}
  *        → {success, command, output, channel}；success=false 按失败在状态行提示
  * 面板显隐由 app.js activateServerTab 派发的 CustomEvent('queqiao:server-view-changed',
@@ -24,6 +27,7 @@ const PLUGIN_PATH = 'astrbot_plugin_minecraft_queqiao_next';
 
 const DIMENSIONS = ['overworld', 'nether', 'the_end'];
 const DIM_LABELS = { overworld: '主世界', nether: '下界', the_end: '末地' };
+const MAP_SOURCE_REAL = 'queqiao-map-web';  // status/snapshot 的 source：真实推送（其余按无数据空态处理）
 const POLL_MS = 7000;          // snapshot 轮询间隔（契约要求 5~10s）
 const MIN_PX_PER_CELL = 0.25;  // 缩放下限：每方块像素
 const MAX_PX_PER_CELL = 16;    // 缩放上限：每方块像素
@@ -71,7 +75,9 @@ const state = {
   dimension: 'overworld',
   dimTouched: false,     // 已从后端恢复或用户手动切过维度（恢复不再覆盖手动值）
   status: null,          // map/<server>/status 最近响应
+  mapDisabled: false,    // 当前服务器 map_enabled=false：面板隐藏、轮询已停
   snapshot: null,        // 最近成功的 snapshot（原始对象）
+  lastSnapshotKey: '',   // 快照指纹（revision 优先，否则 updated_at+bbox+tiles 长度）：相同跳过解码
   tileCanvas: null,      // 瓦片像素解码后的离屏 canvas
   tileError: '',
   viewReady: false,      // 视图已按当前 (server, dimension) 适配过
@@ -101,16 +107,17 @@ function setMapStatus(text, kind = '') {
   }
 }
 
-/* 数据源徽标跟随 status.source：真实推送（QueQiao-Map-Web）/ 占位演示 */
+/* 数据源徽标跟随 status/snapshot.source：真实推送 / 无地图数据（禁用情形由整面板隐藏覆盖） */
 function updateSourceBadge(resp) {
   const badge = el('map-source-badge');
   if (!badge) return;
-  if (resp && resp.source === 'queqiao-map-web') {
+  if (resp && resp.source === MAP_SOURCE_REAL) {
     badge.textContent = '真实数据：QueQiao-Map-Web';
     badge.title = '地图数据由服务端 QueQiao-Map-Web mod 经鹊桥实时推送';
   } else {
-    badge.textContent = '占位演示数据';
-    badge.title = (resp && resp.reason) || '尚未收到该服务器的地图事件，当前展示占位演示数据';
+    badge.textContent = '无地图数据';
+    badge.title = (resp && resp.reason)
+      || '尚未收到该服务器的地图事件：服务端安装 QueQiao-Map-Web mod 后可查看真实地图';
   }
 }
 
@@ -185,7 +192,8 @@ function zoomAt(clientX, clientY, factor) {
   requestDraw();
 }
 
-/* ---------- 瓦片解码（base64 → 离屏 canvas；RGB 全 0 = 透明，露出暗色底） ---------- */
+/* ---------- 瓦片解码（base64 → 独立离屏 canvas；RGB 全 0 = 透明，露出暗色底）
+   绝不触碰可见画布：调用方在解码成功后一次性换入成品 canvas，旧帧全程保持（防刷新闪烁） ---------- */
 function decodeTiles(base64, bbox) {
   if (!base64 || typeof base64 !== 'string') throw new Error('tiles 字段缺失');
   if (!Array.isArray(bbox) || bbox.length !== 4) throw new Error('bbox 字段缺失');
@@ -253,7 +261,7 @@ function mergePlayers(snapshot) {
   }
 }
 
-/* ---------- 绘制 ---------- */
+/* ---------- 绘制（单帧同步段：clearRect + 瓦片 + 玩家标记一次画完，中间无 await，无空帧闪烁） ---------- */
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name);
   return (v && v.trim()) || fallback;
@@ -363,6 +371,7 @@ function resizeCanvas() {
   if (w <= 0 || h <= 0) return;
   const bw = Math.round(w * dpr);
   const bh = Math.round(h * dpr);
+  // 仅在 CSS 尺寸真正变化时才写 width/height：赋值本身会清空画布，每帧写同值也会闪烁
   if (canvas.width !== bw || canvas.height !== bh) {
     canvas.width = bw;
     canvas.height = bh;
@@ -380,15 +389,39 @@ async function fetchStatus() {
     const resp = await apiGet(`map/${enc(serverAtFetch)}/status`);
     if (state.serverName !== serverAtFetch) return;
     state.status = resp;
-    updateSourceBadge(resp);
+    const panel = el('map-panel');
     if (resp && resp.enabled === false) {
-      setMapEmpty(`地图数据源未启用：${resp.reason || '后端未提供原因'}`);
+      // 该服务器 map_enabled=false：整个面板隐藏、停止轮询（契约：不再收地图事件）
+      state.mapDisabled = true;
+      stopPolling();
+      if (panel) panel.classList.add('hidden');
+      return;
     }
+    const wasDisabled = state.mapDisabled;
+    state.mapDisabled = false;
+    // 此前被禁用隐藏、现在功能恢复且仍在服务器视图：面板回显并恢复轮询
+    if (wasDisabled && state.serverName) {
+      if (panel) panel.classList.remove('hidden');
+      if (!state.pollTimer) startPolling();
+    }
+    updateSourceBadge(resp);
   } catch (e) {
     if (state.serverName !== serverAtFetch) return;
     state.status = null;
     if (!state.tileCanvas) setMapEmpty(`地图状态获取失败：${e.message}`);
   }
+}
+
+/* 快照指纹：响应带 revision 优先用它，否则 updated_at + bbox + tiles 长度。
+   指纹与上次相同 = 地图未变：跳过 decodeTiles，只更新玩家 overlay（消除轮询重解码闪烁） */
+function snapshotKey(resp) {
+  if (!resp) return '';
+  if (resp.revision !== undefined && resp.revision !== null) return `r:${resp.revision}`;
+  const stamp = (resp.updated_at === undefined || resp.updated_at === null) ? '' : String(resp.updated_at);
+  const bbox = Array.isArray(resp.bbox) ? resp.bbox.join(',') : '';
+  const tilesLen = typeof resp.tiles === 'string' ? String(resp.tiles.length) : '';
+  if (!stamp && !bbox && !tilesLen) return '';
+  return `${stamp}|${bbox}|${tilesLen}`;
 }
 
 async function fetchSnapshot() {
@@ -400,13 +433,47 @@ async function fetchSnapshot() {
     // 快速切维度/切服务器时丢弃过期响应
     if (state.serverName !== serverAtFetch || state.dimension !== dimAtFetch) return;
     if (resp && resp.dimension && resp.dimension !== dimAtFetch) return;
-    state.snapshot = resp;
-    state.tileError = '';
-    try {
-      state.tileCanvas = decodeTiles(resp.tiles, resp.bbox);
-    } catch (e) {
+    if (resp && resp.source === 'none') {
+      // 无真实数据（无地图事件源）：清屏 + 安装引导空态，不做任何演示渲染
+      state.snapshot = resp;
       state.tileCanvas = null;
+      state.tileError = '';
+      state.lastSnapshotKey = '';
+      state.viewReady = false;
+      state.players.clear();
+      updateSourceBadge(resp);
+      setMapEmpty(resp.reason || '暂无地图数据');
+      const updatedNone = el('map-updated');
+      if (updatedNone) updatedNone.textContent = formatUpdatedAt(resp.updated_at);
+      requestDraw();
+      return;
+    }
+    state.snapshot = resp;
+    const key = snapshotKey(resp);
+    if (key && key === state.lastSnapshotKey && state.tileCanvas) {
+      // 快照未变：沿用已解码瓦片（不重新 decode、不产生空帧），玩家照常合并插值
+      mergePlayers(resp);
+      const updatedSame = el('map-updated');
+      if (updatedSame) updatedSame.textContent = formatUpdatedAt(resp.updated_at);
+      setMapEmpty('');
+      requestDraw();
+      return;
+    }
+    // 防闪烁：decodeTiles 全程在独立离屏 canvas 内完成，成功后一次性替换 state.tileCanvas，
+    // 解码期间可见画布保持上一帧，不做任何 clearRect/清屏
+    let decoded = null;
+    try {
+      decoded = decodeTiles(resp.tiles, resp.bbox);
+    } catch (e) {
       state.tileError = e.message;
+    }
+    if (decoded) {
+      state.tileCanvas = decoded;
+      state.tileError = '';
+      state.lastSnapshotKey = key;
+    } else {
+      // 解码失败：保留旧帧（不清空 tileCanvas），只在状态行提示
+      setMapStatus(`瓦片解码失败：${state.tileError}`, 'err');
     }
     if (!state.viewReady) fitView();
     mergePlayers(resp);
@@ -567,10 +634,11 @@ function applyDimension(dim, { persist = true } = {}) {
   }
   state.dimension = dim;
   syncDimButtons();
-  // 三个维度是三个世界：切维度清空旧快照并重新适配视图
+  // 三个维度是三个世界：切维度清空旧快照并重新适配视图（指纹一并作废）
   state.viewReady = false;
   state.snapshot = null;
   state.tileCanvas = null;
+  state.lastSnapshotKey = '';
   state.players.clear();
   setMapEmpty('正在加载地图…');
   requestDraw();
@@ -582,10 +650,25 @@ function applyDimension(dim, { persist = true } = {}) {
   }
 }
 
+/* 同步可展开下拉：开关按钮显示当前维度文案，选项维护 selected 态（listbox 语义）。
+   函数名沿用 syncDimButtons，applyDimension / init 各调用点保持不变 */
 function syncDimButtons() {
-  document.querySelectorAll('#map-dims .map-dim-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.dim === state.dimension);
+  const label = el('map-dim-current-label');
+  if (label) label.textContent = DIM_LABELS[state.dimension] || state.dimension;
+  document.querySelectorAll('#map-dim-list .map-dim-option').forEach((opt) => {
+    const active = opt.dataset.dim === state.dimension;
+    opt.classList.toggle('active', active);
+    opt.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+}
+
+/* 维度下拉开合：hidden class + aria-expanded 同步 */
+function setDimsOpen(open) {
+  const list = el('map-dim-list');
+  const toggle = el('map-dims-toggle');
+  if (!list || !toggle) return;
+  list.classList.toggle('hidden', !open);
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
 /* ---------- 视图联动（app.js activateServerTab 派发 queqiao:server-view-changed） ---------- */
@@ -607,6 +690,9 @@ function setServer(serverName) {
     state.status = null;
     state.snapshot = null;
     state.tileCanvas = null;
+    state.lastSnapshotKey = '';
+    // 服务器间 map_enabled 各自独立：切服先回显面板，由新的 status 响应决定是否再隐藏
+    state.mapDisabled = false;
     state.players.clear();
     state.viewReady = false;
     setMapEmpty('正在加载地图…');
@@ -699,8 +785,24 @@ function bindCanvas() {
 }
 
 function bindToolbar() {
-  document.querySelectorAll('#map-dims .map-dim-btn').forEach((btn) => {
-    btn.addEventListener('click', () => applyDimension(btn.dataset.dim));
+  // 维度可展开下拉：开关切换列表开合；点选项应用维度（applyDimension 内含持久化）并收起
+  el('map-dims-toggle')?.addEventListener('click', () => {
+    const list = el('map-dim-list');
+    setDimsOpen(!!list && list.classList.contains('hidden'));
+  });
+  document.querySelectorAll('#map-dim-list .map-dim-option').forEach((opt) => {
+    opt.addEventListener('click', () => {
+      applyDimension(opt.dataset.dim);
+      setDimsOpen(false);
+    });
+  });
+  // 外点关闭（mousedown 早于选项 click，容器内点击不受影响）与 Esc 关闭
+  document.addEventListener('mousedown', (e) => {
+    const wrap = el('map-dims');
+    if (wrap && !wrap.contains(e.target)) setDimsOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setDimsOpen(false);
   });
   const canvas = el('map-canvas');
   el('map-zoom-in')?.addEventListener('click', () => {
@@ -718,7 +820,12 @@ function bindToolbar() {
     if (state.serverName) { fetchStatus(); fetchSnapshot(); }
   });
   window.addEventListener('resize', resizeCanvas);
-  window.addEventListener('scroll', closeMenu, true);
+  // 捕获阶段监听所有滚动：菜单自身是 overflow-y:auto 容器，其内部滚动是正常浏览行为，
+  // 不能当成「页面移动」误关菜单——这是玩家列表过长时一滚滚轮就关闭的根因修复
+  window.addEventListener('scroll', (e) => {
+    if (activeMenu && e.target instanceof Node && activeMenu.contains(e.target)) return;
+    closeMenu();
+  }, true);
 }
 
 /* ---------- 启动（script type=module 在 </body> 前：DOM 已就绪） ---------- */

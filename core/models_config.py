@@ -187,6 +187,8 @@ class ServerConfig:
     text2image: bool = True
     # 互通终端加载最近几天的日志分片（0=全部保留分片），每台服务器独立
     terminal_days: int = DEFAULT_TERMINAL_DAYS
+    # 方块地图功能开关（false：不接收地图事件，状态/快照返回 source=none）
+    map_enabled: bool = True
 
     # ---- 消息转发 ----
     forward_chat_to_astrbot: bool = True
@@ -432,6 +434,7 @@ class ServerConfig:
             terminal_days=_to_int_clamped(
                 data.get("terminal_days"), DEFAULT_TERMINAL_DAYS, 0, 30
             ),
+            map_enabled=_to_bool(data.get("map_enabled"), True),
             forward_chat_to_astrbot=_to_bool(message.get("forward_chat_to_astrbot"), True),
             forward_chat_format=_to_str(
                 message.get("forward_chat_format"), DEFAULT_CHAT_FORMAT

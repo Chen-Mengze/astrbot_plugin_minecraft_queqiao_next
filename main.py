@@ -167,6 +167,7 @@ class MinecraftQueQiaoPlugin(Star):
                 continue
 
             self._configs[config.server_name] = config
+            self.map_service.set_enabled(config.server_name, config.map_enabled)
             self.message_bridge.register_server(config)
             self.server_manager.add(
                 config,
@@ -225,6 +226,7 @@ class MinecraftQueQiaoPlugin(Star):
         "auto_forward_prefix",
         "target_sessions",
         "terminal_days",
+        "map_enabled",
     )
     # 布尔型软配置键 → (解析失败时的兜底默认值)，与 _conf_schema.json 默认一致
     _SOFT_BOOL_DEFAULTS = {
@@ -236,6 +238,7 @@ class MinecraftQueQiaoPlugin(Star):
         "forward_achievement_to_astrbot": False,
         "forward_image_to_mc": False,
         "forward_image_from_mc": False,
+        "map_enabled": True,
     }
 
     def apply_soft_config(self, server_name: str, fields: dict) -> bool:
@@ -278,6 +281,9 @@ class MinecraftQueQiaoPlugin(Star):
             # 目标会话变了必须重建桥接索引：否则群 → MC 方向仍按旧会话匹配，
             # 面板保存 / 「mc target add」后要等热重载才生效
             self.message_bridge.reregister_server(config)
+        if "map_enabled" in fields:
+            # 地图开关变化即时同步 MapService（事件门控 / status / snapshot）
+            self.map_service.set_enabled(config.server_name, config.map_enabled)
         if not applied:
             return False
         self._warn_prefix_conflict(config)
@@ -540,10 +546,12 @@ class MinecraftQueQiaoPlugin(Star):
         if config is None:
             return
 
-        # 地图事件（QueQiao-Map-Web 四类 sub_type）交 MapService 旁路消费：
-        # 不进指标/终端日志/AI 触发/互通转发
+        # 地图事件（QueQiao-Map-Web 四类 sub_type）一律拦截，不得落入
+        # 指标/终端日志/AI 触发/互通转发；map_enabled=false 时直接丢弃，
+        # 不再写入 MapService
         if event.sub_type in MAP_EVENT_SUB_TYPES:
-            self.map_service.handle_event(server_name, event)
+            if getattr(config, "map_enabled", True):
+                self.map_service.handle_event(server_name, event)
             return
 
         # 记录事件指标与持久化终端日志（网页未打开期间同样记录）；

@@ -1,4 +1,4 @@
-"""方块地图数据服务（Web 面板游戏顶层方块地图）：真实数据链路 + 占位回退。
+"""方块地图数据服务（Web 面板游戏顶层方块地图）：真实数据链路（无演示数据）。
 
 真实数据来自服务端 mod「QueQiao-Map-Web」，经鹊桥事件桥以 4 类 notice 事件
 推送；main 层按 sub_type 拦截后把事件对象交给 MapService.handle_event
@@ -21,10 +21,11 @@
 循环抛出（handle_event 内部 try/except + logger.warning，带
 「[{PLUGIN_NAME}][{server_name}]」前缀）。
 
-**占位回退语义**：未收到过真实流（调色板 + 至少存过 1 片瓦片）的服务器，
-快照仍由占位生成器按 (server_name, dimension) 种子确定性产出
-（source=placeholder，行为与占位阶段逐字节一致），面板不至于空白；有真实流
-但该维度零瓦片时给「未探索」全黑小窗（以该维度最新鲜玩家为中心 ±112）。
+**无数据语义**：未收到过真实流（调色板 + 至少存过 1 片瓦片）的服务器
+不生成任何演示数据——status/snapshot 返回 source=none，reason 说明原因
+（未收到事件 MAP_NO_DATA_REASON / 开关关闭 MAP_DISABLED_REASON），快照
+bbox=null、tiles 空串、players 空；有真实流但该维度零瓦片时给「未探索」
+全黑小窗（以该维度最新鲜玩家为中心 ±112）。
 
 **磁盘持久化**（解决「palette 每连接只发一次、AstrBot 重启后收不到重发」）：
 <data_dir>/map/<safe_server>/meta.json（调色板 id、colors 原 hex 串、上报
@@ -45,7 +46,6 @@ import json
 import math
 import os
 import re
-import struct
 import threading
 import time
 import zlib
@@ -57,10 +57,11 @@ from astrbot.api import logger
 from ..core.constants import (
     MAP_DEFAULT_DIMENSION,
     MAP_DIMENSIONS,
-    MAP_PLACEHOLDER_REASON,
+    MAP_DISABLED_REASON,
+    MAP_NO_DATA_REASON,
     MAP_PLAYER_STALE_SECONDS,
     MAP_REGISTRY_DIM_SHORT,
-    MAP_SOURCE_PLACEHOLDER,
+    MAP_SOURCE_NONE,
     MAP_SOURCE_REAL,
     MAP_SUB_DIMENSIONS,
     MAP_SUB_PALETTE,
@@ -126,88 +127,8 @@ def _as_float(value: Any) -> float | None:
     return None
 
 
-# ---- 占位生成参数（全部确定性：同服务器+维度+时间桶 → 完全一致） ----
+# ---- 真实流「未探索小窗」参数 ----
 MAP_BBOX_HALF = 112  # bbox 以 (0,0) 为中心 ±112 方块（W=H=224）；亦用于真实流「未探索小窗」
-MAP_PLAYER_NAME_POOL = ("Steve", "Alex", "Notch", "Dream", "George")
-MAP_EXPLORED_RADII = (24, 32, 40)  # 假玩家 explored_radius 候选（方块）
-MAP_ORBIT_CENTER_RANGE = 32.0  # 轨迹圆心 |cx|,|cz| 上限（保证远角必未探索）
-MAP_ORBIT_RADIUS_RANGE = (24.0, 48.0)  # 轨迹半径范围
-MAP_SNAPSHOT_CACHE_SECONDS = 2.0  # 占位快照缓存分桶（自动轮询时免重复生成）
-
-# 顶层方块配色（RGB）——仅占位生成器使用；真实流配色来自上游调色板
-_COLOR_DEEP_WATER = (16, 44, 132)
-_COLOR_SHALLOW_WATER = (40, 92, 184)
-_COLOR_SAND = (219, 211, 153)
-_COLOR_GRASS = (106, 170, 64)
-_COLOR_FOREST = (58, 122, 40)
-_COLOR_STONE = (127, 127, 127)
-_COLOR_SNOW = (242, 248, 252)
-
-
-def _lattice_unit(seed: int, gx: int, gz: int) -> float:
-    """整数格点 → [0,1) 的确定性哈希（值噪声格点值）。"""
-    digest = hashlib.blake2b(
-        struct.pack("<qii", seed & 0x7FFF_FFFF_FFFF_FFFF, gx, gz), digest_size=4
-    ).digest()
-    return int.from_bytes(digest, "big") / 4294967296.0
-
-
-def _seed_for(server_name: str, channel: str) -> int:
-    """(server_name, channel) → 63 位种子；channel 为维度名或 "players"。"""
-    digest = hashlib.blake2b(
-        f"{server_name}\x00{channel}".encode("utf-8"), digest_size=8
-    ).digest()
-    return int.from_bytes(digest, "big") & 0x7FFF_FFFF_FFFF_FFFF
-
-
-def _lattice_grid(
-    seed: int, min_v: int, max_v: int, scale: int
-) -> tuple[list[float], int, int, int]:
-    """预生成噪声格点网格：返回 (行优先取值, gx0, gz0, 行跨距)。"""
-    gx0 = gz0 = min_v // scale - 1
-    gx1 = max_v // scale + 1
-    stride = gx1 - gx0 + 1
-    cells: list[float] = []
-    for gz in range(gx0, gx1 + 1):
-        for gx in range(gx0, gx1 + 1):
-            cells.append(_lattice_unit(seed, gx, gz))
-    return cells, gx0, gz0, stride
-
-
-def _noise_at(
-    grid: tuple[list[float], int, int, int], scale: int, x: int, z: int
-) -> float:
-    """按格点网格做平滑双线性插值（smoothstep），得到连续噪声值。"""
-    cells, gx0, gz0, stride = grid
-    gx = x // scale
-    gz = z // scale
-    tx = (x - gx * scale) / scale
-    tz = (z - gz * scale) / scale
-    sx = tx * tx * (3.0 - 2.0 * tx)
-    sz = tz * tz * (3.0 - 2.0 * tz)
-    ci = (gz - gz0) * stride + (gx - gx0)
-    v00 = cells[ci]
-    v10 = cells[ci + 1]
-    v01 = cells[ci + stride]
-    v11 = cells[ci + stride + 1]
-    a = v00 + (v10 - v00) * sx
-    b = v01 + (v11 - v01) * sx
-    return a + (b - a) * sz
-
-
-def _terrain_color(height: float, moisture: float) -> tuple[int, int, int]:
-    """高程 + 湿度 → 顶层方块配色（仅占位生成器；改名避让上游调色板语义）。"""
-    if height < 0.36:
-        return _COLOR_DEEP_WATER
-    if height < 0.42:
-        return _COLOR_SHALLOW_WATER
-    if height < 0.47:
-        return _COLOR_SAND
-    if height < 0.70:
-        return _COLOR_FOREST if moisture > 0.52 else _COLOR_GRASS
-    if height < 0.80:
-        return _COLOR_STONE
-    return _COLOR_SNOW
 
 
 class _ServerMapState:
@@ -258,22 +179,30 @@ def _blank_tiles_b64() -> str:
 
 
 class MapService:
-    """每服务器一份方块地图状态：真实流优先，无真实流回退占位生成器。"""
+    """每服务器一份方块地图状态：真实流优先；关闭或无真实流时快照为 source=none 空态。"""
 
     def __init__(self, data_dir: Path | None = None) -> None:
         # data_dir=None 为纯内存（tests_offline 旧用法）；提供时启动加载已
         # 持久化状态（损坏文件告警跳过）
         self._data_dir = Path(data_dir) if data_dir is not None else None
         self._states: dict[str, _ServerMapState] = {}
-        # 占位快照缓存：(server, dimension, 时间桶) -> (tiles_b64, players)
-        self._snapshot_cache: dict[
-            tuple[str, str, int], tuple[str, list[dict[str, Any]]]
-        ] = {}
+        # 功能开关（map_enabled=false 的 server_name 集合）：默认启用，
+        # set_enabled 由 main 装载/软更新配置时同步
+        self._disabled: set[str] = set()
         # 落盘锁：flush() 来自 terminate（可能与事件循环不同线程），
         # 事件循环内的节流落盘也可能并发，统一用一把锁串行化
         self._lock = threading.Lock()
         if self._data_dir is not None:
             self._load_all()
+
+    # ---- 功能开关（每台服务器 map_enabled，main 层装载/软更新时同步） ----
+
+    def set_enabled(self, server_name: str, enabled: bool) -> None:
+        """同步 map_enabled：True 移出禁用集合，False 加入（默认视为启用）。"""
+        if enabled:
+            self._disabled.discard(server_name)
+        else:
+            self._disabled.add(server_name)
 
     # ---- 事件接收（main 层按 sub_type 拦截后透传事件对象） ----
 
@@ -617,11 +546,21 @@ class MapService:
     # ---- WebApiController 消费的外向接口 ----
 
     def status(self, server_name: str) -> dict[str, Any]:
-        """某台服务器的地图数据源状态。
+        """某台服务器的地图数据源状态（无任何演示数据）。
 
+        map_enabled=false ⇒ source=none + MAP_DISABLED_REASON；
         收到过调色板且至少存过 1 片瓦片 ⇒ 真实流（source=MAP_SOURCE_REAL）；
-        否则返回与占位阶段完全一致的占位 dict。
+        其余（未收到真实事件）⇒ source=none + MAP_NO_DATA_REASON。
         """
+        if server_name in self._disabled:
+            return {
+                "server_name": server_name,
+                "enabled": False,
+                "source": MAP_SOURCE_NONE,
+                "reason": MAP_DISABLED_REASON,
+                "dimensions": list(MAP_DIMENSIONS),
+                "updated_at": time.time(),
+            }
         st = self._lookup(server_name)
         if st is not None and st.palette_colors and st.ever_tile:
             return {
@@ -635,8 +574,8 @@ class MapService:
         return {
             "server_name": server_name,
             "enabled": True,
-            "source": MAP_SOURCE_PLACEHOLDER,
-            "reason": MAP_PLACEHOLDER_REASON,
+            "source": MAP_SOURCE_NONE,
+            "reason": MAP_NO_DATA_REASON,
             "dimensions": list(MAP_DIMENSIONS),
             "updated_at": time.time(),
         }
@@ -649,17 +588,37 @@ class MapService:
     ) -> dict[str, Any] | None:
         """生成某维度方块地图快照；非法维度返回 None（控制层据此回 400）。
 
-        真实流优先（按瓦片合成），否则走占位生成器（行为与占位阶段逐字节
-        一致）。「at」为显式参考时间（秒，测试/复现用），缺省取当前时间；
-        真实流下它同时作为玩家新鲜度判定基准。
+        功能关闭或无真实数据 ⇒ source=none 空态（无任何演示数据）；否则
+        真实流按瓦片合成。「at」为显式参考时间（秒，测试/复现用），缺省取
+        当前时间；真实流下它同时作为玩家新鲜度判定基准。
         """
         if dimension not in MAP_DIMENSIONS:
             return None
         now = time.time() if at is None else float(at)
+        if server_name in self._disabled:
+            return self._none_snapshot(
+                server_name, dimension, now, MAP_DISABLED_REASON
+            )
         st = self._lookup(server_name)
         if st is not None and st.palette_colors and st.ever_tile:
             return self._real_snapshot(server_name, st, dimension, now)
-        return self._placeholder_snapshot(server_name, dimension, now)
+        return self._none_snapshot(server_name, dimension, now, MAP_NO_DATA_REASON)
+
+    def _none_snapshot(
+        self, server_name: str, dimension: str, now: float, reason: str
+    ) -> dict[str, Any]:
+        """source=none 空态快照：无瓦片、无玩家，reason 说明原因。"""
+        return {
+            "server_name": server_name,
+            "dimension": dimension,
+            "updated_at": now,
+            "source": MAP_SOURCE_NONE,
+            "reason": reason,
+            "cell": {"size": 1, "unit": "block"},
+            "bbox": None,
+            "tiles": "",
+            "players": [],
+        }
 
     def flush(self) -> None:
         """立即落盘全部脏状态（main terminate 接线调用）。"""
@@ -857,36 +816,6 @@ class MapService:
         st.snapshot_cache[dimension] = (bbox, revision, tiles_b64)
         return bbox, tiles_b64
 
-    # ---- 占位快照路径（行为与占位阶段逐字节一致） ----
-
-    def _placeholder_snapshot(
-        self, server_name: str, dimension: str, now: float
-    ) -> dict[str, Any]:
-        """占位生成路径：按时间桶缓存，同桶内不同实例结果完全一致。"""
-        tick = int(now // MAP_SNAPSHOT_CACHE_SECONDS)
-        key = (server_name, dimension, tick)
-        cached = self._snapshot_cache.get(key)
-        if cached is None:
-            players = self._placeholder_players(
-                server_name, tick * MAP_SNAPSHOT_CACHE_SECONDS
-            )
-            tiles = self._render_tiles(server_name, dimension, players)
-            cached = (base64.b64encode(tiles).decode("ascii"), players)
-            if len(self._snapshot_cache) >= 64:
-                self._snapshot_cache.clear()
-            self._snapshot_cache[key] = cached
-        tiles_b64, players = cached
-        return {
-            "server_name": server_name,
-            "dimension": dimension,
-            "updated_at": now,
-            "source": MAP_SOURCE_PLACEHOLDER,
-            "cell": {"size": 1, "unit": "block"},
-            "bbox": [-MAP_BBOX_HALF, -MAP_BBOX_HALF, MAP_BBOX_HALF, MAP_BBOX_HALF],
-            "tiles": tiles_b64,
-            "players": [dict(p) for p in players],
-        }
-
     # ---- 磁盘持久化（palette 每连接只发一次，重启后靠磁盘兜底） ----
 
     def _server_dir(self, server_name: str) -> Path | None:
@@ -1079,89 +1008,3 @@ class MapService:
         with self._lock:
             if st.dirty:
                 self._write_server(server_name, st)
-
-    # ---- 占位生成器 ----
-
-    def _placeholder_players(self, server_name: str, at: float) -> list[dict[str, Any]]:
-        """2~3 名假玩家沿确定性圆轨迹随时间移动；维度轮转分配（主世界必有）。"""
-        seed = _seed_for(server_name, "players")
-        count = 2 + ((seed >> 5) & 1)
-        name_base = seed % len(MAP_PLAYER_NAME_POOL)
-        lo, hi = MAP_ORBIT_RADIUS_RANGE
-        players: list[dict[str, Any]] = []
-        for i in range(count):
-            u = [
-                _lattice_unit(seed, 907 + 31 * i, 1237 + 71 * k) for k in range(7)
-            ]
-            cx = (u[0] - 0.5) * 2.0 * MAP_ORBIT_CENTER_RANGE
-            cz = (u[1] - 0.5) * 2.0 * MAP_ORBIT_CENTER_RANGE
-            orbit = lo + u[2] * (hi - lo)
-            omega = 0.01 + u[3] * 0.03  # rad/s，确定性角速度
-            phase = u[4] * 2.0 * math.pi
-            y = 64.0 + round((u[5] - 0.5) * 16.0, 1)
-            radius = MAP_EXPLORED_RADII[
-                int(u[6] * len(MAP_EXPLORED_RADII)) % len(MAP_EXPLORED_RADII)
-            ]
-            angle = omega * at + phase
-            players.append(
-                {
-                    "name": MAP_PLAYER_NAME_POOL[
-                        (name_base + i) % len(MAP_PLAYER_NAME_POOL)
-                    ],
-                    "x": round(cx + orbit * math.cos(angle), 1),
-                    "y": y,
-                    "z": round(cz + orbit * math.sin(angle), 1),
-                    "dimension": MAP_DIMENSIONS[i % len(MAP_DIMENSIONS)],
-                    "explored_radius": radius,
-                }
-            )
-        return players
-
-    def _render_tiles(
-        self,
-        server_name: str,
-        dimension: str,
-        players: list[dict[str, Any]],
-    ) -> bytes:
-        """渲染 W*H*3 行优先 RGB：已探索=地形配色，未探索=纯黑。"""
-        half = MAP_BBOX_HALF
-        min_x = min_z = -half
-        side = half * 2
-        seed = _seed_for(server_name, dimension)
-        # 高程/湿度各两个八度（大尺度 + 细节），格点种子互不相同
-        height_a = _lattice_grid(seed ^ 0x1111, min_x, half - 1, 32)
-        height_b = _lattice_grid(seed ^ 0x2222, min_x, half - 1, 8)
-        moist_a = _lattice_grid(seed ^ 0x3333, min_x, half - 1, 32)
-        moist_b = _lattice_grid(seed ^ 0x4444, min_x, half - 1, 8)
-        in_dim = [
-            (p["x"], p["z"], p["explored_radius"] * p["explored_radius"])
-            for p in players
-            if p["dimension"] == dimension
-        ]
-        out = bytearray(side * side * 3)  # 默认 (0,0,0)：未探索遮罩
-        for j in range(side):
-            z = min_z + j
-            row_base = j * side * 3
-            for i in range(side):
-                x = min_x + i
-                explored = False
-                for px, pz, r2 in in_dim:
-                    dx = x - px
-                    dz = z - pz
-                    if dx * dx + dz * dz <= r2:
-                        explored = True
-                        break
-                if not explored:
-                    continue
-                height = 0.62 * _noise_at(
-                    height_a, 32, x, z
-                ) + 0.38 * _noise_at(height_b, 8, x, z)
-                moisture = 0.62 * _noise_at(
-                    moist_a, 32, x, z
-                ) + 0.38 * _noise_at(moist_b, 8, x, z)
-                color = _terrain_color(height, moisture)
-                k = row_base + i * 3
-                out[k] = color[0]
-                out[k + 1] = color[1]
-                out[k + 2] = color[2]
-        return bytes(out)

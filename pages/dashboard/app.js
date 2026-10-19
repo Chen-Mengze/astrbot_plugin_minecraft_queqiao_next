@@ -3245,6 +3245,11 @@ class DashboardApp {
         : 2;
       daysBox.value = String(Math.max(0, Math.min(30, daysVal)));
     }
+    // 方块地图开关（每台服务器 map_enabled，conf 条目顶层；缺省视为开启）
+    const mapBox = document.getElementById('st-map-enabled');
+    if (mapBox) {
+      mapBox.checked = confItem ? confItem.map_enabled !== false : true;
+    }
     // 消息转发配置（conf 的 message 子对象，缺省回落后端 _message_view 默认）：
     // 任一转发控件正被编辑时整组不回写，避免打断输入
     const fwdBoxes = {
@@ -3338,6 +3343,9 @@ class DashboardApp {
         // 互通终端加载天数（单服生效，0~30；后端会再钳制一次）
         daysChanged = daysVal !== this.terminalDaysFor(server.server_name);
         payload.terminal_days = daysVal;
+        // 方块地图开关（软配置：后端落盘 + 就地生效，不触发重连/reloaded）
+        const mapBox = document.getElementById('st-map-enabled');
+        payload.map_enabled = mapBox ? !!mapBox.checked : true;
         // 消息转发：显式提交全部值（面板展示的即当前生效值，覆盖语义）
         const msg = {};
         const fwdChat = document.getElementById('st-fwd-chat');

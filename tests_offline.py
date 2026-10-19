@@ -6056,87 +6056,58 @@ print("OK  UMO 归一 / 隔离对话同群全成员匹配 / 目标去重只发�
       "回声与重复投递拦截 / mc target 绑定收敛规范群号且免热重载 / help 同步")
 
 # ============================================================
-# 52. 方块地图占位数据服务 + status/snapshot/teleport API + map_dimension 偏好
+# 52. 方块地图无数据契约（source=none）+ status/snapshot/teleport API + map_dimension 偏好
 # ============================================================
-print("\n=== 52. 方块地图占位数据服务 + status/snapshot/teleport API + map_dimension 偏好 ===")
-import base64 as _b6452
-import math as _math52
+print("\n=== 52. 方块地图无数据契约（source=none）+ status/snapshot/teleport API + map_dimension 偏好 ===")
 import shutil as _sh52
 
 from astrbot_plugin_minecraft_queqiao_next.services.map_service import MapService as _MS52
 from astrbot_plugin_minecraft_queqiao_next.core.constants import (
-    MAP_DIMENSIONS as _MDIMS52,
+    MAP_DISABLED_REASON as _MDR52,
     MAP_FALLBACK_Y as _MFY52,
-    MAP_PLACEHOLDER_REASON as _MPR52,
-    MAP_SOURCE_PLACEHOLDER as _MSP52,
+    MAP_NO_DATA_REASON as _MNR52,
+    MAP_SOURCE_NONE as _MSN52,
 )
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC52
 
-# ---- (a) 占位快照直测：结构自洽 + 契约字段 ----
+# ---- (a) 无数据快照直测：source=none 空态 + 契约字段（无任何演示数据）----
 _ms52 = _MS52()
 _snap52 = _ms52.snapshot("Srv52", "overworld", at=1000.0)
 assert _snap52 is not None
 assert set(_snap52.keys()) == {
-    "server_name", "dimension", "updated_at", "source", "cell", "bbox", "tiles", "players",
+    "server_name", "dimension", "updated_at", "source", "reason", "cell", "bbox", "tiles", "players",
 }, _snap52.keys()
 assert _snap52["server_name"] == "Srv52" and _snap52["dimension"] == "overworld"
-assert isinstance(_snap52["updated_at"], float)
-assert _snap52["source"] == _MSP52 == "placeholder"
+assert _snap52["updated_at"] == 1000.0, "显式 at 应原样写入 updated_at"
+assert _snap52["source"] == _MSN52 == "none"
+assert _snap52["reason"] == _MNR52, "未收到真实事件应提示 QueQiao-Map-Web mod 依赖"
 assert _snap52["cell"] == {"size": 1, "unit": "block"}
-_bbox52 = _snap52["bbox"]
-assert _bbox52 == [-112, -112, 112, 112], _bbox52  # minx/minz 含、maxx/maxz 不含
-_w52 = _bbox52[2] - _bbox52[0]
-_h52 = _bbox52[3] - _bbox52[1]
-_raw52 = _b6452.b64decode(_snap52["tiles"])
-assert len(_raw52) == _w52 * _h52 * 3, "tiles base64 解码长度必须等于 W*H*3"
+assert _snap52["bbox"] is None and _snap52["tiles"] == "" and _snap52["players"] == [], (
+    "空态必须无 bbox、无瓦片、无玩家——绝不回退演示数据")
+assert _ms52.snapshot("Srv52", "sky") is None, "非法维度应返回 None"
+assert _MS52().snapshot("Srv52", "overworld", at=1000.0) == _snap52, (
+    "全新实例的空态必须逐字段一致（无随机生成物）")
 
-_pl52 = _snap52["players"]
-assert 2 <= len(_pl52) <= 3, _pl52
-for _p52 in _pl52:
-    assert set(_p52.keys()) == {"name", "x", "y", "z", "dimension", "explored_radius"}, _p52
-    assert isinstance(_p52["name"], str) and _p52["name"]
-    for _f52 in ("x", "y", "z"):
-        assert isinstance(_p52[_f52], float) and _math52.isfinite(_p52[_f52]), _p52
-    assert _p52["dimension"] in _MDIMS52
-    assert isinstance(_p52["explored_radius"], int) and _p52["explored_radius"] > 0
-assert any(p["dimension"] == "overworld" for p in _pl52), "主世界必须分到假玩家"
-
+# ---- (b) status 无数据契约 + set_enabled 关/开切换 ----
 _st52 = _ms52.status("Srv52")
 assert set(_st52.keys()) == {
     "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
 }, _st52.keys()
-assert _st52["enabled"] is True and _st52["source"] == "placeholder"
-assert _st52["reason"] == _MPR52
+assert _st52["enabled"] is True and _st52["source"] == _MSN52
+assert _st52["reason"] == _MNR52
 assert _st52["dimensions"] == ["overworld", "nether", "the_end"]
 
-# ---- (b) 未探索全黑 / 玩家半径已探索 / 确定性与实时移动 / 桩不消费 ----
-
-def _pixel52(snap, bx, bz):
-    """bbox 内方块坐标 (bx,bz) -> 行优先 RGB 三元组。"""
-    raw = _b6452.b64decode(snap["tiles"])
-    bb = snap["bbox"]
-    k = ((int(bz) - bb[1]) * (bb[2] - bb[0]) + (int(bx) - bb[0])) * 3
-    return (raw[k], raw[k + 1], raw[k + 2])
-
-assert _pixel52(_snap52, -112, -112) == (0, 0, 0), "bbox 远角必须未探索（RGB 全黑）"
-_black52 = 0
-for _k52 in range(0, len(_raw52), 3):
-    if _raw52[_k52] == _raw52[_k52 + 1] == _raw52[_k52 + 2] == 0:
-        _black52 += 1
-assert 0 < _black52 < _w52 * _h52, f"应同时存在未探索(黑)与已探索(非黑)像素: {_black52}"
-for _p52 in [p for p in _pl52 if p["dimension"] == "overworld"]:
-    _px52 = max(_bbox52[0], min(_bbox52[2] - 1, int(round(_p52["x"]))))
-    _pz52 = max(_bbox52[1], min(_bbox52[3] - 1, int(round(_p52["z"]))))
-    assert _pixel52(_snap52, _px52, _pz52) != (0, 0, 0), "玩家所在位置必须已探索"
-
-_ms52b = _MS52()
-assert _ms52b.snapshot("Srv52", "overworld", at=1000.9)["tiles"] == _snap52["tiles"], (
-    "同 (server,dimension,时间桶) 不同实例必须完全一致（确定性）"
-)
-_snap52d = _ms52.snapshot("Srv52", "overworld", at=1337.0)
-assert [(p["x"], p["z"]) for p in _snap52d["players"]] != [(p["x"], p["z"]) for p in _pl52], (
-    "假玩家应随时间沿轨迹移动"
-)
-assert _ms52.snapshot("Srv52", "sky") is None, "非法维度应返回 None"
+_ms52.set_enabled("Srv52", False)
+_st52off = _ms52.status("Srv52")
+assert _st52off["enabled"] is False and _st52off["source"] == _MSN52
+assert _st52off["reason"] == _MDR52, "禁用后 status 应引用 MAP_DISABLED_REASON"
+assert _st52off["dimensions"] == ["overworld", "nether", "the_end"]
+_snap52off = _ms52.snapshot("Srv52", "nether", at=2000.0)
+assert _snap52off["source"] == _MSN52 and _snap52off["reason"] == _MDR52
+assert _snap52off["bbox"] is None and _snap52off["tiles"] == "" and _snap52off["players"] == []
+_ms52.set_enabled("Srv52", True)
+assert _ms52.status("Srv52")["reason"] == _MNR52, "重新启用应回到无数据契约"
+assert _ms52.snapshot("Srv52", "overworld", at=1000.0) == _snap52, "重新启用后空态复原"
 
 # （原「接桩方法」子块随 apply_chunk_update/set_players 桩删除而移除：
 # 真实数据接收已由 handle_event/_apply_* 取代，见 map_service 自测）
@@ -6180,7 +6151,9 @@ import astrbot_plugin_minecraft_queqiao_next.services.web_api as _wa52
 
 _wac52 = _WAC52(
     _ctx52, _sm52, None, None, None,
-    {"Srv52": None, "Srv52off": None},
+    {"Srv52": None, "Srv52off": None,
+     "Srv52dis": _SC52.from_dict(
+         {"server": {"server_name": "Srv52dis"}, "map_enabled": False})},
     None, None, None, None, _ms52,
 )
 _wac52.register_routes()
@@ -6199,16 +6172,18 @@ _d52 = _res52["data"]
 assert set(_d52.keys()) == {
     "server_name", "enabled", "source", "reason", "dimensions", "updated_at",
 }
-assert _d52["reason"] == _MPR52 and _d52["dimensions"] == ["overworld", "nether", "the_end"]
+assert _d52["reason"] == _MNR52 and _d52["dimensions"] == ["overworld", "nether", "the_end"]
 assert asyncio.run(_wac52.get_map_status("Nope"))["status_code"] == 404
 assert asyncio.run(_wac52.get_map_status("Srv52off"))["status_code"] == 200, (
-    "未连接服务器也应返回占位状态"
+    "未连接服务器也应返回无数据状态"
 )
 
 _wa52.request.query = {"dimension": "nether"}
 _res52n = asyncio.run(_wac52.get_map_snapshot("Srv52"))
 assert _res52n["status_code"] == 200 and _res52n["data"]["dimension"] == "nether"
-assert len(_b6452.b64decode(_res52n["data"]["tiles"])) == _w52 * _h52 * 3
+assert _res52n["data"]["source"] == "none" and _res52n["data"]["tiles"] == ""
+assert _res52n["data"]["bbox"] is None and _res52n["data"]["players"] == [], (
+    "无真实数据的维度快照必须是空态")
 _wa52.request.query = {"dimension": "sky"}
 assert asyncio.run(_wac52.get_map_snapshot("Srv52"))["status_code"] == 400, "非法维度应 400"
 _wa52.request.query = {}
@@ -6275,6 +6250,9 @@ for _bad52 in (
 _r52 = _tp52({"player": "A", "x": "100.5", "z": "-20.5", "y": "71"})
 assert _r52["data"]["command"] == "tp A 100.5 71.0 -20.5", "WebUI 字符串坐标应防御式容忍"
 assert _tp52({"player": "A", "target": "B"}, server="Nope")["status_code"] == 404
+_r52dis = _tp52({"player": "A", "target": "B"}, server="Srv52dis")
+assert _r52dis["status_code"] == 400, _r52dis
+assert _r52dis["error"] == "该服务器的方块地图功能已关闭", _r52dis["error"]
 
 # ---- (e) 面板偏好白名单新增 map_dimension ----
 from astrbot_plugin_minecraft_queqiao_next.services.panel_prefs import PanelPrefsStore as _PP52
@@ -6305,8 +6283,8 @@ for _bad52 in ({"map_dimension": "sky"}, {"map_dimension": 42}, {"map_dimension"
     assert _prefs52(_bad52)["status_code"] == 400, _bad52
 assert _pp52.all()["map_dimension"] == "the_end", "非法值不得覆盖已存偏好"
 
-print("OK  占位快照结构/尺寸自洽 / 未探索全黑且玩家半径已探索 / 同桶确定+跨桶移动 / "
-      "status+snapshot+teleport API（404/400/无回执不重发/y 回落/坐标格式化）/ "
+print("OK  无数据契约空态（source=none/无瓦片/无玩家/确定一致）/ set_enabled 关-开 reason 切换 / "
+      "status+snapshot+teleport API（404/400/无回执不重发/y 回落/坐标格式化/已禁服务器传送拒绝）/ "
       "map_dimension 白名单")
 
 print("\n=== 53. MapService 真实数据链路（zlib-pal8 / sha1 去重 / 换盘清空 / 容错 / 玩家时效 / 持久化） ===")
@@ -6325,9 +6303,9 @@ from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     MAP_DIMENSIONS as _MDIMS53,
     MAP_EVENT_SUB_TYPES as _MEST53,
     MAP_PLAYER_STALE_SECONDS as _MPS53,
-    MAP_PLACEHOLDER_REASON as _MPR53,
+    MAP_NO_DATA_REASON as _MNR53,
     MAP_REGISTRY_DIM_SHORT as _MRDS53,
-    MAP_SOURCE_PLACEHOLDER as _MSP53,
+    MAP_SOURCE_NONE as _MSN53,
     MAP_SOURCE_REAL as _MSR53,
     MAP_SUB_DIMENSIONS as _MSD53,
     MAP_SUB_PALETTE as _MSPa53,
@@ -6428,7 +6406,7 @@ assert _ms53.handle_event(_srvsw53, _ev53(
 assert _stsw53.tiles == {}, "调色板 id 变化必须清空该服全部瓦片"
 assert _stsw53.dim_tile_count == {}
 assert _stsw53.revision[_OW53] == _revsw53 + 1, "清空应 bump revision 使快照缓存失效"
-assert _stsw53.ever_tile is True, "ever_tile 是历史标记，清空后仍走真实流而非占位"
+assert _stsw53.ever_tile is True, "ever_tile 是历史标记，清空后仍走真实流而非空态"
 _tnow53 = _time53.time()
 _snapsw53 = _ms53.snapshot(_srvsw53, _OW53, at=_tnow53 + 1.0)
 assert _snapsw53["source"] == _MSR53
@@ -6462,8 +6440,8 @@ assert _ms53.handle_event(_srvbad53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], ti
 _stbad53 = _ms53._states[_srvbad53]
 assert _stbad53.tiles == {}, "四类非法瓦片必须全部被拒"
 assert _stbad53.ever_tile is False, "从未存过瓦片不得进入真实流"
-assert _ms53.status(_srvbad53)["source"] == _MSP53
-assert _ms53.status(_srvbad53)["reason"] == _MPR53, "占位文案引用常量符号"
+assert _ms53.status(_srvbad53)["source"] == _MSN53
+assert _ms53.status(_srvbad53)["reason"] == _MNR53, "无数据文案引用常量符号"
 # 非法调色板色 → 整盘拒绝（不建状态、不落 palette）；瓦片先于调色板 → 丢弃
 _srvpal53 = "Srv53pal"
 assert _ms53.handle_event(_srvpal53, _ev53(_MSPa53, id="x1", colors=["#000000", "red"])) is True
@@ -6545,7 +6523,7 @@ print("OK  zlib-pal8 端到端（负坐标/多 size/下标0与越界→黑）/ s
       "瓦片先于调色板丢弃 / 玩家时效缺席与维度过滤 / map_dimensions 映射与未知忽略 / "
       "flush+新实例持久化往返（安全目录名）")
 
-print("\n=== 54. main 拦截四类地图事件（旁路消费，不进指标/终端日志/AI/转发） ===")
+print("\n=== 54. main 拦截四类地图事件（旁路消费，不进指标/终端日志/AI/转发）+ map_enabled 门控 ===")
 import astrbot_plugin_minecraft_queqiao_next.main as _m54
 from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC54
 from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MC54
@@ -6623,5 +6601,38 @@ assert [h.event_type for h in _plugin54.metrics._history] == ["chat"]
 _snap54 = _plugin54.map_service.real.snapshot("Srv54")
 assert _snap54["source"] == _MSR53, "handle_event 应真实消费（旁路而非丢弃）"
 assert [p["name"] for p in _snap54["players"]] == ["Map54"]
+# map_enabled=false：地图事件不再交 handle_event 消费，但仍被一律拦截
+# （不得落入聊天/转发/指标链路）；该服务器的聊天事件不受影响
+assert "map_enabled" in _m54.MinecraftQueQiaoPlugin.SOFT_CONFIG_KEYS, (
+    "map_enabled 必须列入软配置键：面板更新可免热重载")
+assert _m54.MinecraftQueQiaoPlugin._SOFT_BOOL_DEFAULTS.get("map_enabled") is True, (
+    "map_enabled 布尔兜底默认必须与 schema 一致（true）")
+_plugin54._configs["Srv54off"] = _SC54.from_dict(
+    {"server": {"server_name": "Srv54off"}, "map_enabled": False})
+
+
+async def _run54off():
+    for _e54 in _MAP_EV54:
+        await _plugin54._on_queqiao_event("Srv54off", _e54)
+    # 对照：地图已禁用服务器的聊天事件仍应走互通链路
+    await _plugin54._on_queqiao_event("Srv54off", QueQiaoEvent.from_dict({
+        "post_type": "message", "event_name": "PlayerChatEvent",
+        "player": {"nickname": "Off54"}, "message": "still chatting"}))
+
+
+asyncio.run(_run54off())
+assert [(s, t) for s, t in _plugin54.map_service.calls if s == "Srv54off"] == [], (
+    "map_enabled=false 的服务器：四类地图事件不得被 handle_event 消费（替身记录 0 次）")
+assert "Srv54off" not in _plugin54.map_service.real._states, "禁用服务器不得建立地图状态"
+assert _plugin54.terminal_logs.rows == [
+    ("Srv54", "chat", "<Talker> hello world"),
+    ("Srv54off", "chat", "<Off54> still chatting"),
+], "四类地图事件不得进终端日志；禁用服务器聊天对照必须进"
+assert _plugin54.message_bridge.calls == [
+    ("Srv54", "PlayerChatEvent"), ("Srv54off", "PlayerChatEvent")], (
+    "地图事件不得进转发；禁用服务器聊天必须正常走互通")
+assert sum(_plugin54.metrics.events_by_type.values()) == 2, (
+    "四类地图事件（含禁用服务器）不得进指标计数")
 print("OK  MAP_EVENT_SUB_TYPES 恰为四类常量 / 四类事件走 _on_queqiao_event 被 "
-      "map_service 消费且不进终端日志·转发·指标 / 聊天对照事件链路不受影响")
+      "map_service 消费且不进终端日志·转发·指标 / 聊天对照事件链路不受影响 / "
+      "map_enabled=false：地图事件不消费但仍被拦截 / SOFT_CONFIG_KEYS 含 map_enabled 守卫")

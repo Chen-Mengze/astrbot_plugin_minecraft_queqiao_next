@@ -174,16 +174,12 @@ MONITOR_API_TIMEOUT = 5
 # ---- 方块地图（Web 面板游戏顶层方块地图） ----
 # 真实数据来自服务端 mod「QueQiao-Map-Web」推来的 4 类 sub_type 事件
 # （见下方 MAP_EVENT_SUB_TYPES），由 MapService.handle_event 旁路消费；
-# 无真实流时回退占位数据：快照由 services/map_service.py 的占位生成器按
-# (server_name, dimension) 种子确定性产出，source 为 placeholder。
+# 无真实流时不提供任何演示数据：快照 source 为 none（无数据/已关闭各有
+# 说明文案，见 MAP_NO_DATA_REASON / MAP_DISABLED_REASON），面板按此展示
+# 空态或隐藏。每台服务器由 map_enabled 开关控制（默认开）。
 # 维度为白名单（URL query / 面板偏好 map_dimension 均按 MAP_DIMENSIONS
 # 校验），中文名映射供前端展示。自定义维度按事件动态登记（见
 # MAP_REGISTRY_DIM_SHORT）。
-MAP_SOURCE_PLACEHOLDER = "placeholder"
-MAP_PLACEHOLDER_REASON = (
-    "尚未收到该服务器的地图事件：需服务端安装 QueQiao-Map-Web mod 并在 "
-    "config/queqiao-mapext.yml 设 enabled: true，当前展示占位数据"
-)
 MAP_DIMENSIONS: tuple[str, ...] = ("overworld", "nether", "the_end")
 MAP_DEFAULT_DIMENSION = "overworld"
 MAP_DIMENSION_NAMES: dict[str, str] = {
@@ -205,8 +201,16 @@ MAP_SUB_PLAYER_MOVE = "player_move"
 MAP_EVENT_SUB_TYPES: frozenset[str] = frozenset(
     {MAP_SUB_DIMENSIONS, MAP_SUB_PALETTE, MAP_SUB_TILE, MAP_SUB_PLAYER_MOVE}
 )
-# 快照来源标识：真实流（mod 经鹊桥推来的数据）与占位互斥
+# 快照来源标识：真实流（mod 经鹊桥推来的数据）；无任何数据/功能关闭时
+# 为 MAP_SOURCE_NONE（无演示数据）
 MAP_SOURCE_REAL = "queqiao-map-web"
+MAP_SOURCE_NONE = "none"
+# source=none 的两种说明：未收到真实事件 vs 功能开关关闭
+MAP_NO_DATA_REASON = (
+    "尚未收到该服务器的地图事件：需服务端安装 QueQiao-Map-Web mod 并在 "
+    "config/queqiao-mapext.yml 设 enabled: true"
+)
+MAP_DISABLED_REASON = "方块地图功能已关闭（配置 map_enabled=false）"
 # map_tile 载荷的瓦片编码格式：调色板索引位图经 zlib 压缩
 MAP_TILE_FORMAT = "zlib-pal8"
 # 玩家位置时效（秒）：player_move 超过该时长未更新视为离线，从地图移除

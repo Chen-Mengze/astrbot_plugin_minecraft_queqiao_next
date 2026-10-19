@@ -112,6 +112,12 @@
             "hint": "互通终端展示最近几天的日志（0~30，0=全部保留分片，默认 2：今天+昨天）。每台服务器独立",
             "default": 2
           },
+          "map_enabled": {
+            "type": "bool",
+            "description": "启用方块地图功能",
+            "hint": "关闭后不再接收该服务器的地图事件，仪表盘隐藏地图面板，地图传送接口将被拒绝。需要服务端 QueQiao-Map-Web mod 推送地图流才有真实数据",
+            "default": true
+          },
           "text2image": {
             "type": "bool",
             "description": "将服务器信息渲染为图片输出",

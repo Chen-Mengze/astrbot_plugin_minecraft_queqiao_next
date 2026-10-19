@@ -298,6 +298,18 @@
             <span class="settings-row-hint">互通终端展示最近几天的日志（1～30，0 = 全部保留分片，默认 2：今天 + 昨天），每台服务器独立</span>
           </label>
         </div>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <span class="settings-group-title">🗺️ 方块地图</span>
+          </div>
+          <label class="settings-row">
+            <span class="settings-row-label">启用方块地图</span>
+            <span class="settings-row-control">
+              <input type="checkbox" id="st-map-enabled" />
+            </span>
+            <span class="settings-row-hint">关闭后隐藏地图面板、不再接收地图事件、传送接口拒绝（每台服务器独立，软配置即时生效免重载）</span>
+          </label>
+        </div>
         <div class="settings-footer">
           <button class="btn btn-primary btn-sm" id="settings-save"
             title="保存功能设置（改动落盘后即时生效、不重连）">保存并生效</button>
@@ -305,23 +317,27 @@
       </div>
     </section>
 
-    <!-- 方块地图面板（map-view.js）：canvas 瓦片渲染 + 拖拽平移/滚轮缩放 + 维度切换 +
+    <!-- 方块地图面板（map-view.js）：canvas 瓦片渲染 + 拖拽平移/滚轮缩放 + 可展开下拉维度切换 +
          右键自绘传送菜单。数据来自后端 MapService（map/<server>/status、snapshot、teleport）：
-         真实数据由服务端 QueQiao-Map-Web mod 经鹊桥推送，未收到事件时回退占位演示数据，
-         徽标按 status.source 显示；map_dimension 偏好走后端 panel_prefs 持久化（AGENTS §4.7）。
+         真实数据由服务端 QueQiao-Map-Web mod 经鹊桥推送；无真实数据时显示安装引导空态（source:"none"），
+         该服务器 map_enabled=false 时隐藏整个面板并停止轮询；维度用可展开下拉切换；
+         map_dimension 偏好走后端 panel_prefs 持久化（AGENTS §4.7）。
          显隐由 app.js activateServerTab 派发的 queqiao:server-view-changed 事件驱动 -->
     <section class="map-panel hidden" id="map-panel">
       <div class="map-header">
         <span class="map-title">🗺️ 方块地图</span>
-        <span class="map-badge" id="map-source-badge" title="首次状态拉取后按数据源自动更新：真实推送（QueQiao-Map-Web mod）或占位演示数据">地图数据源检测中…</span>
+        <span class="map-badge" id="map-source-badge" title="状态拉取后由 JS 按数据源自动重写文案：真实推送（QueQiao-Map-Web mod）或无地图数据">地图数据源检测中…</span>
         <span class="map-spacer"></span>
         <span class="map-updated" id="map-updated"></span>
       </div>
       <div class="map-toolbar">
-        <div class="map-dims" id="map-dims" role="group" aria-label="地图维度切换">
-          <button type="button" class="map-dim-btn active" data-dim="overworld" title="主世界地图">主世界</button>
-          <button type="button" class="map-dim-btn" data-dim="nether" title="下界地图">下界</button>
-          <button type="button" class="map-dim-btn" data-dim="the_end" title="末地地图">末地</button>
+        <div class="map-dims" id="map-dims">
+          <button type="button" class="map-dims-toggle" id="map-dims-toggle" aria-haspopup="listbox" aria-expanded="false" title="切换地图维度"><span id="map-dim-current-label">主世界</span><span class="map-dims-caret">▾</span></button>
+          <div class="map-dim-list hidden" id="map-dim-list" role="listbox" aria-label="地图维度">
+            <button type="button" class="map-dim-option" role="option" data-dim="overworld">主世界</button>
+            <button type="button" class="map-dim-option" role="option" data-dim="nether">下界</button>
+            <button type="button" class="map-dim-option" role="option" data-dim="the_end">末地</button>
+          </div>
         </div>
         <span class="map-spacer"></span>
         <div class="map-zoom" role="group" aria-label="地图缩放">

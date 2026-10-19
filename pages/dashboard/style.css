@@ -2879,31 +2879,69 @@ body {
   flex-wrap: wrap;
 }
 
+/* 维度可展开下拉：开关按钮 + 绝对定位浮层列表（.hidden 带 !important，收起优先） */
 .map-dims {
+  position: relative;
   display: inline-flex;
-  gap: 4px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 3px;
 }
 
-.map-dim-btn {
-  border: none;
-  background: transparent;
+.map-dims-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
   color: var(--text-secondary);
   font-size: 12px;
-  padding: 4px 12px;
-  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.map-dim-btn:hover {
+.map-dims-toggle:hover {
   color: var(--text-primary);
 }
 
-.map-dim-btn.active {
+.map-dims-caret {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.map-dim-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-dim-option {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.map-dim-option:hover {
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+}
+
+.map-dim-option.active {
   background: var(--accent);
   color: #fff;
 }
@@ -2973,7 +3011,8 @@ body {
   z-index: 10000;
   min-width: 180px;
   max-width: 300px;
-  max-height: 320px;
+  /* 视口感知上限：菜单永不超屏（openMenu 钳制坐标后仍完整可见），玩家多时在内部滚动浏览 */
+  max-height: min(60vh, 480px);
   overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -2995,6 +3034,10 @@ body {
   display: block;
   width: 100%;
   text-align: left;
+  /* 玩家名/标题过长兜底：单行 + ellipsis，不换行撑高菜单 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border: none;
   background: transparent;
   color: var(--text-primary);

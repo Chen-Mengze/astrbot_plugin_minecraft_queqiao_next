@@ -5,14 +5,23 @@
 ## v0.6.7 (2026-10-19)
 
 ### 新增
-- **方块地图面板**：仪表盘「功能设置」下方新增「🗺️ 方块地图」面板——按区块展示该服已探索的顶层方块地图与玩家实时位置，支持拖拽平移、滚轮 / ＋－按钮缩放、主世界 / 下界 / 末地维度切换（当前维度经面板偏好 `map_dimension` 由后端记住）。未推送地图流的服务器显示按「服务器 + 维度」确定性生成的占位演示快照（含会移动的演示玩家），面板带占位徽标
-- **真实地图数据链路**：接收服务端 mod [QueQiao-Map-Web](https://github.com/Chen-Mengze/QueQiao-Map-Web) 经鹊桥推送的 4 类地图事件（`map_dimensions` / `map_palette` / `map_tile` / `player_move`）——zlib-pal8 瓦片解码、sha1 去重、调色板换 id 清空全服瓦片、快照合成与 revision 缓存、玩家位置时效过滤；调色板与瓦片持久化到 `data_dir/map/`（AstrBot 重启不丢图，`terminate` 时落盘）。地图事件在事件入口被旁路消费，不进指标 / 终端日志 / AI / 转发；插件侧零新增配置
+- **方块地图面板**：仪表盘「功能设置」下方新增「🗺️ 方块地图」面板——按区块展示该服已探索的顶层方块地图与玩家实时位置，支持拖拽平移、滚轮 / ＋－按钮缩放、主世界 / 下界 / 末地维度切换（当前维度经面板偏好 `map_dimension` 由后端记住）。未推送地图流的服务器面板显示安装引导空态（需服务端安装 QueQiao-Map-Web mod 并在其 `config/queqiao-mapext.yml` 设 `enabled: true`）
+- **真实地图数据链路**：接收服务端 mod [QueQiao-Map-Web](https://github.com/Chen-Mengze/QueQiao-Map-Web) 经鹊桥推送的 4 类地图事件（`map_dimensions` / `map_palette` / `map_tile` / `player_move`）——zlib-pal8 瓦片解码、sha1 去重、调色板换 id 清空全服瓦片、快照合成与 revision 缓存、玩家位置时效过滤；调色板与瓦片持久化到 `data_dir/map/`（AstrBot 重启不丢图，`terminate` 时落盘）。地图事件在事件入口被旁路消费，不进指标 / 终端日志 / AI / 转发；每台服务器是否接收由 `map_enabled` 开关控制
 - **地图传送接口**：右键地图上的玩家头像（或服务器卡片的玩家胶囊）把玩家传送到另一玩家；右键地图空白处把选定玩家传送到该点坐标。指令经鹊桥 / RCON 通道只发送一次（超时 = 结果未知，不重发），缺 Y 时先经 `data get entity <玩家> Pos` 读当前高度、失败回落 64；成功 / 失败与指令原文显示在面板状态行并记入互通终端
 - **Web API**：新增 `GET /map/<服务器>/status`、`GET /map/<服务器>/snapshot?dimension=`（tiles 为 base64 RGB 瓦片）、`POST /map/<服务器>/teleport` 三个接口，未注入地图服务时不注册（与监控路由同款）
+- **方块地图开关**：每台服务器新增 `map_enabled`（bool，默认启用），仪表盘「功能设置」可免重载热切换；关闭后停止接收该服务器地图事件、隐藏地图面板、传送接口返回拒绝
+- **维度下拉切换**：地图面板维度按钮改为可展开列表（主世界 / 下界 / 末地），记住上次选择的维度
+
+### 修复
+- **右键传送菜单滚动**：修复菜单内滚轮会立即关闭菜单的问题；菜单高度按视口钳制（min(60vh, 480px)）可滚动浏览，超长玩家名省略号截断
+- **地图刷新闪烁**：快照解码改为离屏完成后整帧替换，快照未变化跳过重绘，画布宽高仅在尺寸变化时重置
 
 ### 变更
-- **MAP_PLACEHOLDER_REASON 文案如实化**：占位说明改为指引服务端安装 QueQiao-Map-Web mod 并在其 `config/queqiao-mapext.yml` 设 `enabled: true`；`status` / `snapshot` 的字段与编码契约不变，前端无需改动
+- **地图状态徽标如实化**：地图面板状态徽标按真实状态显示——真实数据 / 无地图数据（悬停显示原因：尚未收到该服务器的地图事件，需服务端安装 QueQiao-Map-Web mod 并设 `enabled: true`）/ 功能关闭（`map_enabled=false`，面板隐藏）；`status` / `snapshot` 的字段与编码契约不变
 - **插件标识彻底分离（fork 独立化）**：插件包名、`PLUGIN_NAME` / `PLUGIN_DATA_DIR`、Web API 路由前缀、日志二级前缀与前端请求路径全部改为 `astrbot_plugin_minecraft_queqiao_next`，与上游 `astrbot_plugin_minecraft_queqiao`（XTsat）彻底分离——两个插件可同时安装、日志前缀可区分、数据目录互不共用；本 fork 的面板偏好 / 绑定 / 互通日志从新数据目录开始，旧数据不自动迁移。README 顶部加入 fork 显著声明（AGPL-3.0 §5(c)，2026-10-19）、鸣谢保留上游署名、`author` 标注 fork 来源，`LICENSE` 保持 AGPL-3.0 全文不变
+
+### 移除
+- **占位演示地图**：不再为未推送地图流的服务器生成合成地形与演示玩家，改显示安装引导空态
 
 ## v0.6.6 (2026-10-17)
 
