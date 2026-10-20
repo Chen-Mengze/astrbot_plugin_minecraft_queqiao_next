@@ -22,6 +22,11 @@
  * {detail:{serverName|null}}) 驱动：serverName 为 null（全局/图床/配置视图）时隐藏
  * 面板并停止轮询；否则显示、按 map_dimension 恢复维度并每 7s 轮询 snapshot。
  * map_dimension 持久化走后端 panel_prefs（AGENTS §4.7：沙箱 iframe 禁本地存储）。
+ * 玩家标记为方形头像（Xaero 世界地图风格）：crafatar 头像方形直绘；失败/未就绪时
+ * 三层回落——② 远程预取的经典 Steve 素材（模块加载拉一次，常驻内存复用即缓存）→
+ * ③ 代码内置 8×8 经典 Steve 像素矩阵（素材预取失败兜底，无文件资产）；方形深色
+ * 衬底（1px 描边）+ 微阴影恒在，保证近黑底色可读；无圆形 clip / 圆形描边，
+ * 名字标签仍在头像下方。
  * 右键为自绘 context-menu 浮层（受限 iframe 里 window.alert/confirm 被拦截）：
  *   命中玩家标记 → 「将 A 传送到 → 其他玩家」；命中空白 → 「传送到 (x, z) → 在线玩家」。
  * 对外暴露 window.__mcqqMapTeleportMenu(player, anchorEl, serverName) 供 app.js
@@ -39,6 +44,43 @@ const MIN_PX_PER_CELL = 0.25;  // 缩放下限：每方块像素
 const MAX_PX_PER_CELL = 16;    // 缩放上限：每方块像素
 const MOVE_ANIM_MS = 700;      // 玩家位置线性插值时长（体现实时移动）
 const HIT_RADIUS_PX = 16;      // 玩家标记命中半径（屏幕像素）
+const PLAYER_HALF_PX = 11;     // 方形头像标记半边长（与旧圆形标记同量级，命中半径不变）
+
+// 经典 Steve 回落素材②：模块加载时远程预取一次，onload 后常驻内存复用=缓存
+// （浏览器 HTTP 缓存令二次进入免费）；预取失败走 ③ 像素矩阵，标记永不空
+const STEVE_FALLBACK_URL = 'https://mc-heads.net/avatar/MHF_Steve/64';
+
+/* 经典 Steve 脸 8×8 回落③（代码内置像素矩阵，素材②预取失败时的最后兜底）：
+   H=深棕头发、S=古铜皮肤、E=白眼珠、P=紫瞳孔、N=鼻子（深肤色）、M=嘴线 */
+const STEVE_FACE_ROWS = [
+  'HHHHHHHH',
+  'HHHHHHHH',
+  'HSSHHSSH',
+  'HSSSSSSH',
+  'HEPSSPEH',
+  'HSSNNSSH',
+  'HSMMMMSH',
+  'HSSSSSSH',
+];
+const STEVE_FACE_COLORS = {
+  H: '#3b2b1d', S: '#a97c50', E: '#e6e6e6', P: '#52418d', N: '#8a6440', M: '#5c4630',
+};
+// 启动时一次性画进 8×8 离屏 canvas；玩家标记回落时方形 nearest-neighbor 放大直绘
+const steveFallbackCanvas = (() => {
+  const h = STEVE_FACE_ROWS.length;
+  const w = STEVE_FACE_ROWS[0].length;
+  const off = document.createElement('canvas');
+  off.width = w;
+  off.height = h;
+  const g = off.getContext('2d');
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      g.fillStyle = STEVE_FACE_COLORS[STEVE_FACE_ROWS[y][x]] || '#000000';
+      g.fillRect(x, y, 1, 1);
+    }
+  }
+  return off;
+})();
 
 // ?mapdebug=1 开启地图诊断日志（排查闪烁/轮询异常；默认关闭，零开销）
 const MAP_DEBUG = new URLSearchParams(window.location.search).get('mapdebug') === '1';
@@ -257,6 +299,13 @@ function decodeTiles(base64, bbox) {
 }
 
 /* ---------- 玩家标记：头像缓存 + 线性插值 ---------- */
+/* 回落②预取：模块加载时拉一次经典 Steve 素材（一次性网络行为，不随轮询重复）；
+   onload 置 ready 并补一帧（与头像 onload 同款幂等重绘）；失败则标记走 ③ 矩阵 */
+const steveFallback = { img: new Image(), ready: false };
+steveFallback.img.onload = () => { steveFallback.ready = true; requestDraw(); };
+steveFallback.img.onerror = () => { /* 素材预取失败：走 ③ 8×8 像素矩阵兜底 */ };
+steveFallback.img.src = STEVE_FALLBACK_URL;
+
 function avatarFor(name) {
   let rec = state.avatars.get(name);
   if (rec) return rec;
@@ -319,7 +368,7 @@ function drawMap() {
   const cw = rect.width;
   const ch = rect.height;
   ctx.clearRect(0, 0, cw, ch);
-  ctx.fillStyle = cssVar('--map-bg', '#161d29');
+  ctx.fillStyle = cssVar('--map-bg', '#0a0c10');
   ctx.fillRect(0, 0, cw, ch);
 
   const snap = state.snapshot;
@@ -333,7 +382,7 @@ function drawMap() {
     const dw = (maxx - minx) * state.pxPerCell;
     const dh = (maxz - minz) * state.pxPerCell;
     // 未探索区域：bbox 范围先铺暗色遮罩，瓦片里的透明像素露出它
-    ctx.fillStyle = cssVar('--map-unexplored', '#2a3446');
+    ctx.fillStyle = cssVar('--map-unexplored', '#101318');
     ctx.fillRect(dx, dz, dw, dh);
     if (dw > 0.5 && dh > 0.5) {
       ctx.imageSmoothingEnabled = false;
@@ -341,9 +390,7 @@ function drawMap() {
         dx, dz, dw, dh);
     }
     ctx.imageSmoothingEnabled = true;
-    ctx.strokeStyle = cssVar('--map-border', 'rgba(148,163,184,0.25)');
-    ctx.lineWidth = 1;
-    ctx.strokeRect(dx, dz, dw, dh);
+    // 不再描 bbox 边框（Xaero 世界地图风格：区域流把地图拼成整片，无边界线）
   }
 
   const now = performance.now();
@@ -355,40 +402,34 @@ function drawMap() {
     const sx = worldToScreenX(p.curX, cw);
     const sz = worldToScreenZ(p.curZ, ch);
     if (sx < -40 || sx > cw + 40 || sz < -40 || sz > ch + 40) continue;
-    const r = 11;
-    // 头像圆片：crafatar 皮肤头，加载失败回落首字母圆形
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(sx, sz, r, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.fillStyle = cssVar('--bg-tertiary', '#1f2937');
-    ctx.fill();
-    ctx.clip();
+    const half = PLAYER_HALF_PX;
     const av = avatarFor(p.name);
-    if (!av.failed && av.img.complete && av.img.naturalWidth > 0) {
-      ctx.drawImage(av.img, sx - r, sz - r, r * 2, r * 2);
-    } else {
-      ctx.fillStyle = cssVar('--text-primary', '#e2e8f0');
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(p.name.slice(0, 2).toUpperCase(), sx, sz + 0.5);
-    }
+    // 方形头像（Xaero 玩家图标同款）：先铺 1px 外扩的深色衬底方块（即描边）+ 微阴影，
+    // 保证头像在近黑未探索底色上可读；无圆形 clip、无圆形描边
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 4;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+    ctx.fillRect(sx - half - 1, sz - half - 1, half * 2 + 2, half * 2 + 2);
     ctx.restore();
-    ctx.beginPath();
-    ctx.arc(sx, sz, r + 1.5, 0, Math.PI * 2);
-    ctx.strokeStyle = cssVar('--accent', '#38bdf8');
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    // 三层回落：① crafatar 玩家头像 → ② 远程预取的经典 Steve 素材（就绪后常驻复用）
+    // → ③ 代码内置 8×8 像素矩阵（素材预取失败兜底）；方形深色衬底已在上方恒铺（描边）
+    const src = (!av.failed && av.img.complete && av.img.naturalWidth > 0)
+      ? av.img
+      : (steveFallback.ready ? steveFallback.img : steveFallbackCanvas);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(src, sx - half, sz - half, half * 2, half * 2);
+    ctx.restore();
     // 名字标签（深底描边保证两种主题可读）
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
-    ctx.strokeText(p.name, sx, sz + r + 4);
+    ctx.strokeText(p.name, sx, sz + half + 4);
     ctx.fillStyle = '#f8fafc';
-    ctx.fillText(p.name, sx, sz + r + 4);
+    ctx.fillText(p.name, sx, sz + half + 4);
   }
   return animating;
 }

@@ -2807,7 +2807,8 @@ body {
    方块地图面板（#map-panel，map-view.js）：DOM 位于 #settings-panel 与
    #terminal-panel 之间；grid 位次由本块接管——地图占 row 4、终端下移到 row 5
    （.layout-main 前缀保证覆盖基础规则）。颜色全部复用既有变量（随 light/dark
-   自动切换），--map-* 是地图语义色、定义在面板上即随主题联动，无需分主题复制。
+   自动切换）；--map-* 是地图语义色，其中 --map-bg / --map-unexplored 特意写死近黑
+   （Xaero 世界地图风格：未探索是纯黑系暗底，不随主题回亮），其余仍随主题联动。
    ========================================================================== */
 .layout-main .map-panel {
   grid-column: 1 / -1;
@@ -2822,10 +2823,9 @@ body {
   box-shadow: var(--shadow-md);
   height: 460px;
   transition: border-color 0.2s ease;
-  --map-bg: var(--bg-tertiary);
-  /* 未探索区域 = 暗色遮罩（tiles 全 RGB 0 解码为透明，露出这一层底色） */
-  --map-unexplored: rgba(10, 14, 22, 0.62);
-  --map-border: var(--border-color);
+  --map-bg: #0a0c10;
+  /* 未探索区域 = 近黑遮罩（Xaero 世界地图风格；tiles 全 RGB 0 解码为透明，露出这一层底色） */
+  --map-unexplored: #101318;
 }
 
 /* 终端面板下移到第 5 行（覆盖基础规则的 grid-row: 4） */
@@ -3054,7 +3054,7 @@ body {
 }
 
 /* 自绘右键菜单（浮层）：沙箱 iframe 禁用原生菜单/confirm，一律 DOM 实现；
-   地图画布空白处、玩家圆片与服务器卡片玩家胶囊共用同一风格 */
+   地图画布空白处、玩家方形头像与服务器卡片玩家胶囊共用同一风格 */
 .mcqq-context-menu {
   position: fixed;
   z-index: 10000;

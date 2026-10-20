@@ -6339,6 +6339,7 @@ import zlib as _zl53
 
 from astrbot_plugin_minecraft_queqiao_next.services.map_service import (
     MAP_BBOX_HALF as _MBH53,
+    MAP_REGION_SIDE as _MRS53,
     MapService as _MS53,
     safe_server_name as _SSN53,
 )
@@ -6354,6 +6355,7 @@ from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     MAP_SUB_DIMENSIONS as _MSD53,
     MAP_SUB_PALETTE as _MSPa53,
     MAP_SUB_PLAYER_MOVE as _MSPm53,
+    MAP_SUB_REGION as _MSRe53,
     MAP_SUB_TILE as _MSTi53,
     MAP_TILE_FORMAT as _MTF53,
 )
@@ -6379,6 +6381,20 @@ def _tile53(cx, cz, size, cells, fmt=_MTF53):
     comp = _zl53.compress(bytes(raw))
     return {
         "format": fmt, "cx": cx, "cz": cz, "size": size,
+        "b64": _b6453.b64encode(comp).decode("ascii"),
+        "sha1": _hs53.sha1(comp).hexdigest(),
+    }
+
+
+def _region53(rx, rz, cells, fmt=_MTF53, xor=7):
+    """合成 zlib-pal8 区域条目（与 _tile53 同款，仅 side 固定 512）：cells 为
+    {(区域内px,pz): 调色板下标}，稀疏非零 ⇒ 压缩后很小；xor 显式传以断言留档。"""
+    raw = bytearray(_MRS53 * _MRS53)
+    for (_pxg53, _pzg53), _idxg53 in cells.items():
+        raw[_pzg53 * _MRS53 + _pxg53] = _idxg53
+    comp = _zl53.compress(bytes(raw))
+    return {
+        "format": fmt, "rx": rx, "rz": rz, "xor": xor,
         "b64": _b6453.b64encode(comp).decode("ascii"),
         "sha1": _hs53.sha1(comp).hexdigest(),
     }
@@ -6617,19 +6633,145 @@ try:
 finally:
     _sh53.rmtree(_dir53b, ignore_errors=True)
 
+# ---- (j) map_region 端到端：负区域坐标 512² 稀疏落位 / bbox 并集 / 瓦片覆盖区域 /
+#      xor 留档 / sha1 去重不 bump / 非法 format·b64·长度全拒 ----
+_srvrg53 = "Srv53rg"
+_ms53.handle_event(_srvrg53, _ev53(
+    _MSPa53, id="rg1", colors=["#000000", "#FF0000", "#00FF00", "#0000FF"]))
+_rg_cells53 = {
+    (0, 0): 1, (511, 511): 2, (256, 0): 1,
+    (257, 1): 1, (212, 10): 1, (100, 200): 3,
+}
+_rg_ev53 = _ev53(_MSRe53, dimension=_RDIM53[_OW53],
+                 regions=[_region53(-1, 0, _rg_cells53, xor=909)])
+assert _ms53.handle_event(_srvrg53, _rg_ev53) is True
+_strg53 = _ms53._states[_srvrg53]
+assert _strg53.ever_tile is True, "仅区域也应置 ever_tile（语义已扩为瓦片∪区域）"
+assert _ms53.status(_srvrg53)["source"] == _MSR53, (
+    "该维度零瓦片但有区域：走真实流合成而不是全黑未探索小窗")
+_snaprg53 = _ms53.snapshot(_srvrg53, _OW53, at=1000.0)
+assert _snaprg53["bbox"] == [-512, 0, 0, 512], "仅区域维度 bbox = 区域矩形（rx=-1,rz=0）"
+assert len(_b6453.b64decode(_snaprg53["tiles"])) == 512 * 512 * 3
+assert _snap_px53(_snaprg53, -512, 0) == (255, 0, 0), "区域 (px0,pz0) 下标1 → 红"
+assert _snap_px53(_snaprg53, -1, 511) == (0, 255, 0), "区域 (511,511) 下标2 → 绿"
+assert _snap_px53(_snaprg53, -412, 200) == (0, 0, 255), "区域 (100,200) 下标3 → 蓝"
+assert _snap_px53(_snaprg53, -411, 201) == (0, 0, 0), "区域未设置下标 0 必须保持 (0,0,0)"
+assert _strg53.regions[(_OW53, -1, 0)][0] == 909, "xor 必须留档到 st.regions"
+assert _strg53.regions[(_OW53, -1, 0)][1] == _hs53.sha1(
+    _b6453.b64decode(_rg_ev53.payload["regions"][0]["b64"])).hexdigest(), (
+    "去重键 = 自算 sha1（zlib 压缩字节摘要）")
+# 瓦片局部覆盖区域（区域先到、瓦片后到：瓦片胜出；瓦片下标 0 不遮挡区域底层）
+assert _ms53.handle_event(_srvrg53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(-16, 0, 8, {(0, 0): 2})])) is True  # 覆盖 x[-256,-128)×z[0,128)
+_snaprg53b = _ms53.snapshot(_srvrg53, _OW53, at=1000.0)
+assert _snaprg53b["bbox"] == [-512, 0, 0, 512], "瓦片矩形在区域矩形内，bbox 不变"
+assert _snap_px53(_snaprg53b, -256, 0) == (0, 255, 0), "瓦片覆盖区域红点，瓦片胜出"
+assert _snap_px53(_snaprg53b, -255, 1) == (255, 0, 0), "瓦片下标 0 处不画，保留区域底层"
+# 叠加幂等与到达顺序无关：瓦片先到、新内容区域后到，仍旧瓦片胜出
+assert _ms53.handle_event(_srvrg53, _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[
+    _tile53(-19, 0, 8, {(4, 10): 2})])) is True
+_rg_new53 = _ev53(_MSRe53, dimension=_RDIM53[_OW53], regions=[
+    _region53(-1, 0, {**_rg_cells53, (400, 400): 3}, xor=910)])
+_revrg53 = _strg53.revision[_OW53]
+assert _ms53.handle_event(_srvrg53, _rg_new53) is True
+assert _strg53.revision[_OW53] == _revrg53 + 1, "同位置区域新内容应 bump revision"
+_snaprg53c = _ms53.snapshot(_srvrg53, _OW53, at=1000.0)
+assert _snap_px53(_snaprg53c, -300, 10) == (0, 255, 0), (
+    "瓦片先到、区域后到：仍瓦片胜出（叠加幂等与到达顺序无关）")
+assert _snap_px53(_snaprg53c, -112, 400) == (0, 0, 255), "区域新内容像素应生效"
+# 同载荷重发：同自算 sha1 → 去重不 bump；仅 xor 变 → 只更新留档不 bump
+_revrg53b = _strg53.revision[_OW53]
+assert _ms53.handle_event(_srvrg53, _rg_new53) is True
+assert _strg53.revision[_OW53] == _revrg53b, "同载荷重发（同自算 sha1）不得 bump revision"
+assert _ms53.snapshot(_srvrg53, _OW53, at=1000.0)["tiles"] == _snaprg53c["tiles"]
+assert _ms53.handle_event(_srvrg53, _ev53(_MSRe53, dimension=_RDIM53[_OW53], regions=[
+    _region53(-1, 0, {**_rg_cells53, (400, 400): 3}, xor=999)])) is True
+assert _strg53.revision[_OW53] == _revrg53b, "仅 xor 变（压缩字节相同）不得 bump revision"
+assert _strg53.regions[(_OW53, -1, 0)][0] == 999, "仅 xor 变应只更新留档 tuple"
+# 非法 format / b64 / 解压长度 / 非 dict 条目：全部被拒，入库与 revision 不变
+_regrg_before53 = set(_strg53.regions)
+_complen_rg53 = _zl53.compress(b"\x01" * (_MRS53 * _MRS53 - 1))
+assert _ms53.handle_event(_srvrg53, _ev53(_MSRe53, dimension=_RDIM53[_OW53], regions=[
+    dict(_region53(5, 5, {(0, 0): 1}), format="zlib-rgb24"),   # 编码不支持
+    {"format": _MTF53, "rx": 5, "rz": 5, "xor": 1,
+     "b64": "not!!b64!!", "sha1": "0" * 40},                    # b64 非法
+    {"format": _MTF53, "rx": 5, "rz": 5, "xor": 1,
+     "b64": _b6453.b64encode(_complen_rg53).decode("ascii"),
+     "sha1": _hs53.sha1(_complen_rg53).hexdigest()},            # 解码长度 ≠ 512²
+    "not-a-dict",                                              # 条目非 dict
+])) is True
+assert set(_strg53.regions) == _regrg_before53, "非法区域必须全部被拒"
+assert _strg53.revision[_OW53] == _revrg53b, "全非法批次不得 bump revision"
+assert _ms53.snapshot(_srvrg53, _OW53, at=1000.0)["bbox"] == [-512, 0, 0, 512]
+# 区域先于调色板 ⇒ 整批丢弃（上游保证 palette 先于 region，与 tile 同款）
+_ms53.handle_event("Srv53rgp", _ev53(_MSRe53, dimension=_RDIM53[_OW53], regions=[
+    _region53(0, 0, {(0, 0): 1})]))
+assert _ms53._states["Srv53rgp"].regions == {}, "调色板未到的区域应整批丢弃"
+
+# ---- (k) 调色板变化 → 区域与瓦片一并清空（同为旧调色板量化） ----
+_revrg53c = _strg53.revision[_OW53]
+assert _ms53.handle_event(_srvrg53, _ev53(
+    _MSPa53, id="rg2", colors=["#000000", "#FF0000"])) is True
+assert _strg53.regions == {} and _strg53.dim_region_count == {}, (
+    "调色板变化必须清空全部区域（否则新旧量化混用错色）")
+assert _strg53.tiles == {} and _strg53.dim_tile_count == {}
+assert _strg53.revision[_OW53] == _revrg53c + 1, (
+    "瓦片与区域同涉维度只 bump 一次 revision")
+# 零瓦片纯区域维度同样清空 + bump
+assert _ms53.handle_event(_srvrg53, _ev53(_MSRe53, dimension=_RDIM53[_NE53], regions=[
+    _region53(0, 0, {(0, 0): 1}, xor=5)])) is True
+_revne53 = _strg53.revision[_NE53]
+assert _ms53.handle_event(_srvrg53, _ev53(
+    _MSPa53, id="rg3", colors=["#000000", "#00FF00"])) is True
+assert _strg53.regions == {}, "零瓦片维度的区域也随调色板变化清空"
+assert _strg53.revision[_NE53] == _revne53 + 1, "纯区域维度换盘应 bump revision"
+assert _strg53.ever_tile is True, "ever_tile 是历史标记，清空后仍走真实流"
+
+# ---- (l) 区域持久化往返：flush → 新实例快照逐字节一致 / <dim>.regions.json ----
+_dir53c = pathlib.Path(tempfile.mkdtemp(prefix="qmap53c_"))
+try:
+    _srvrp53 = "Srv53rp"
+    _msgp53 = _MS53(_dir53c)
+    _msgp53.handle_event(_srvrp53, _ev53(
+        _MSPa53, id="rp1", colors=["#000000", "#FF0000", "#00FF00"]))
+    assert _msgp53.handle_event(_srvrp53, _ev53(_MSRe53, dimension=_RDIM53[_OW53], regions=[
+        _region53(-1, 0, {(0, 0): 1, (256, 0): 2}, xor=42)])) is True
+    assert _msgp53.handle_event(_srvrp53, _ev53(_MSTi53, dimension=_RDIM53[_NE53], tiles=[
+        _tile53(0, 0, 1, {(0, 0): 1})])) is True
+    _msgp53.flush()
+    _sdirp53 = _dir53c / "map" / _SSN53(_srvrp53)
+    assert (_sdirp53 / f"{_OW53}.regions.json").is_file(), "区域按维度落盘"
+    assert not (_sdirp53 / f"{_NE53}.regions.json").is_file(), (
+        "无区域维度不得产生空 regions 文件")
+    _msgp53b = _MS53(_dir53c)  # 模拟重启：区域从磁盘恢复
+    _oldp53 = _msgp53.snapshot(_srvrp53, _OW53, at=1000.0)
+    _newp53 = _msgp53b.snapshot(_srvrp53, _OW53, at=1000.0)
+    assert _newp53["source"] == _oldp53["source"] == _MSR53
+    assert _newp53["bbox"] == _oldp53["bbox"] == [-512, 0, 0, 512], (
+        "重启后区域维度不落回全黑小窗")
+    assert _newp53["tiles"] == _oldp53["tiles"], "重启后区域合成结果必须逐字节一致"
+    assert _msgp53b._states[_srvrp53].regions[(_OW53, -1, 0)][0] == 42, (
+        "xor 留档随磁盘往返")
+    assert _msgp53b.status(_srvrp53)["source"] == _MSR53, (
+        "仅区域维度重启后仍走真实流（ever_tile 恢复）")
+finally:
+    _sh53.rmtree(_dir53c, ignore_errors=True)
+
 print("OK  zlib-pal8 端到端（负坐标/多 size/下标0与越界→黑）/ sha1 去重幂等+新内容 bump / "
       "换调色板清空全服瓦片+全黑小窗（玩家中心）/ 非法 format·b64·zlib·长度·调色板整盘拒 / "
       "瓦片先于调色板丢弃 / 玩家时效缺席与维度过滤 / 内置别名+mod 维度动态登记与非法 key 拒绝 / "
       "快照 revision / 调色板纯黑项夹紧 / 同 id 换色板清瓦片 / mod 维度持久化往返 / "
-      "flush+新实例持久化往返（安全目录名）")
+      "flush+新实例持久化往返（安全目录名） / map_region 端到端（512²负区域坐标/稀疏落位/"
+      "bbox 并集/瓦片覆盖区域与到达顺序无关/xor 留档与仅变不 bump/去重/非法全拒/"
+      "调色板清区域/区域持久化往返）")
 
-print("\n=== 54. main 拦截四类地图事件（旁路消费，不进指标/终端日志/AI/转发）+ map_enabled 门控 ===")
+print("\n=== 54. main 拦截五类地图事件（旁路消费，不进指标/终端日志/AI/转发）+ map_enabled 门控 ===")
 import astrbot_plugin_minecraft_queqiao_next.main as _m54
 from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as _SC54
 from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MC54
 
-# 拦截守卫：main 判定集合必须恰为四类 sub_type 常量（禁硬编码字符串）
-assert _MEST53 == frozenset({_MSD53, _MSPa53, _MSTi53, _MSPm53})
+# 拦截守卫：main 判定集合必须恰为五类 sub_type 常量（禁硬编码字符串）
+assert _MEST53 == frozenset({_MSD53, _MSPa53, _MSTi53, _MSRe53, _MSPm53})
 
 
 class _TL54:
@@ -6673,6 +6815,8 @@ _plugin54.map_service = _Map54()
 _MAP_EV54 = [
     _ev53(_MSPa53, id="m1", colors=["#000000", "#FF7700"]),
     _ev53(_MSTi53, dimension=_RDIM53[_OW53], tiles=[_tile53(0, 0, 1, {(0, 0): 1})]),
+    _ev53(_MSRe53, dimension=_RDIM53[_OW53],
+          regions=[_region53(0, 0, {(0, 0): 1}, xor=11)]),
     _ev53(_MSPm53, players=[{"uuid": "u-54", "nickname": "Map54", "x": 1.0,
                              "y": 64.0, "z": 2.0, "dimension": _RDIM53[_OW53]}]),
     _ev53(_MSD53, dimensions=[_RDIM53[_OW53]]),
@@ -6690,12 +6834,13 @@ async def _run54():
 
 asyncio.run(_run54())
 assert _plugin54.map_service.calls == [
-    ("Srv54", _MSPa53), ("Srv54", _MSTi53), ("Srv54", _MSPm53), ("Srv54", _MSD53)], (
-    "四类地图事件必须全部交给 map_service.handle_event")
+    ("Srv54", _MSPa53), ("Srv54", _MSTi53), ("Srv54", _MSRe53), ("Srv54", _MSPm53),
+    ("Srv54", _MSD53)], (
+    "五类地图事件必须全部交给 map_service.handle_event")
 assert _plugin54.terminal_logs.rows == [("Srv54", "chat", "<Talker> hello world")], (
     "地图事件不得进终端日志，仅对照聊天事件进一条")
 assert _plugin54.message_bridge.calls == [("Srv54", "PlayerChatEvent")], (
-    "四类地图事件不得进 message_bridge，对照聊天事件必须进")
+    "五类地图事件不得进 message_bridge，对照聊天事件必须进")
 assert sum(_plugin54.metrics.events_by_type.values()) == 1, "地图事件不得进指标计数"
 assert [h.event_type for h in _plugin54.metrics._history] == ["chat"]
 _snap54 = _plugin54.map_service.real.snapshot("Srv54")
@@ -6722,18 +6867,18 @@ async def _run54off():
 
 asyncio.run(_run54off())
 assert [(s, t) for s, t in _plugin54.map_service.calls if s == "Srv54off"] == [], (
-    "map_enabled=false 的服务器：四类地图事件不得被 handle_event 消费（替身记录 0 次）")
+    "map_enabled=false 的服务器：五类地图事件不得被 handle_event 消费（替身记录 0 次）")
 assert "Srv54off" not in _plugin54.map_service.real._states, "禁用服务器不得建立地图状态"
 assert _plugin54.terminal_logs.rows == [
     ("Srv54", "chat", "<Talker> hello world"),
     ("Srv54off", "chat", "<Off54> still chatting"),
-], "四类地图事件不得进终端日志；禁用服务器聊天对照必须进"
+], "五类地图事件不得进终端日志；禁用服务器聊天对照必须进"
 assert _plugin54.message_bridge.calls == [
     ("Srv54", "PlayerChatEvent"), ("Srv54off", "PlayerChatEvent")], (
     "地图事件不得进转发；禁用服务器聊天必须正常走互通")
 assert sum(_plugin54.metrics.events_by_type.values()) == 2, (
-    "四类地图事件（含禁用服务器）不得进指标计数")
-print("OK  MAP_EVENT_SUB_TYPES 恰为四类常量 / 四类事件走 _on_queqiao_event 被 "
+    "五类地图事件（含禁用服务器）不得进指标计数")
+print("OK  MAP_EVENT_SUB_TYPES 恰为五类常量（含 map_region）/ 五类事件走 _on_queqiao_event 被 "
       "map_service 消费且不进终端日志·转发·指标 / 聊天对照事件链路不受影响 / "
       "map_enabled=false：地图事件不消费但仍被拦截 / SOFT_CONFIG_KEYS 含 map_enabled 守卫")
 

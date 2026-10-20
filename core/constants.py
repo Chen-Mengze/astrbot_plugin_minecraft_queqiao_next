@@ -174,7 +174,7 @@ MONITOR_AUTO_REFRESH_MAX = 3600
 MONITOR_API_TIMEOUT = 5
 
 # ---- 方块地图（Web 面板游戏顶层方块地图） ----
-# 真实数据来自服务端 mod「QueQiao-Map-Web」推来的 4 类 sub_type 事件
+# 真实数据来自服务端 mod「QueQiao-Map-Web」推来的 5 类 sub_type 事件
 # （见下方 MAP_EVENT_SUB_TYPES），由 MapService.handle_event 旁路消费；
 # 无真实流时不提供任何演示数据：快照 source 为 none（无数据/已关闭各有
 # 说明文案，见 MAP_NO_DATA_REASON / MAP_DISABLED_REASON），面板按此展示
@@ -194,16 +194,25 @@ MAP_DIMENSION_NAMES: dict[str, str] = {
 # 传送：data get entity Pos 解析失败时的回落 Y（海平面）
 MAP_FALLBACK_Y = 64.0
 
-# QueQiao-Map-Web 四类 notice 事件的 sub_type（事件路由只看 sub_type）：
+# QueQiao-Map-Web 五类 notice 事件的 sub_type（事件路由只看 sub_type）：
 # map_dimensions 维度清单 / map_palette 调色板（≤256 色）/
 # map_tile 瓦片批量（base64 + zlib 的 pal8 索引位图，sha1 去重）/
+# map_region 区域批量（512×512 二维区域，初次连接全量补发 + 断点续传：
+# 重发判定在服务端按 xor 内容指纹做，消费端只留档 xor、按自算 sha1 去重）/
 # player_move 玩家位置心跳。
 MAP_SUB_DIMENSIONS = "map_dimensions"
 MAP_SUB_PALETTE = "map_palette"
 MAP_SUB_TILE = "map_tile"
+MAP_SUB_REGION = "map_region"
 MAP_SUB_PLAYER_MOVE = "player_move"
 MAP_EVENT_SUB_TYPES: frozenset[str] = frozenset(
-    {MAP_SUB_DIMENSIONS, MAP_SUB_PALETTE, MAP_SUB_TILE, MAP_SUB_PLAYER_MOVE}
+    {
+        MAP_SUB_DIMENSIONS,
+        MAP_SUB_PALETTE,
+        MAP_SUB_TILE,
+        MAP_SUB_REGION,
+        MAP_SUB_PLAYER_MOVE,
+    }
 )
 # 快照来源标识：真实流（mod 经鹊桥推来的数据）；无任何数据/功能关闭时
 # 为 MAP_SOURCE_NONE（无演示数据）

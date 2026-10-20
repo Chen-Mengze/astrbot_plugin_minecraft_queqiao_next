@@ -253,18 +253,20 @@ SecurityError**，不是返回空——任何「try/catch 包一下就能用」�
 
 ### 4.9 方块地图（改 pages/dashboard/map-view.js 或 map_service.py 前必读）
 
-数据规范以 QueQiao-Map-Web 的 `docs/INTEGRATION.md` 为准，四类事件按 `sub_type` 路由：
-`map_dimensions` / `map_palette` / `map_tile`（`zlib-pal8` + `sha1` 去重）/ `player_move`。
+数据规范以 QueQiao-Map-Web 的 `docs/INTEGRATION.md` 为准，五类事件按 `sub_type` 路由：
+`map_dimensions` / `map_palette` / `map_tile`（`zlib-pal8` + `sha1` 去重）/
+`map_region`（512×512 二维区域全量/续传流：初次连接补发已加载区域，断点续传）/ `player_move`。
 
 后端不变式：
 
 - 维度映射：内置 `MAP_DIMENSIONS` 之外的 registry key 走 `_dim_short()` 动态登记，
   短名随 `meta.json` 的 `dyn_dims` 持久化；非法 key 一律不入库（`MAP_REGISTRY_KEY_RE`）
-- 调色板 **id 变化或颜色内容变化**都要清空该服瓦片并 bump revision（否则新旧量化混用出错色）
+- 调色板 **id 变化或颜色内容变化**都要清空该服**瓦片与区域**并 bump revision（两者同为旧调色板量化，混用出错色）
+- `map_region` 区域流：区域 = 32×32 区块（512×512 像素，rx/rz 可负），解码与瓦片同构仅 side 固定（`MAP_REGION_SIDE`）；区域到达 = **整块替换**该 512×512、合成时区域为**底层**，`map_tile` 为局部覆盖在其上（**叠加幂等，与到达顺序无关**）；`xor` 是服务端库内容指纹（Xaero 式），**续传重发判定在服务端**，消费端只留档排障、去重按自算 sha1；合成必须先对区域做窗口相交判定再解压（单区域 256 KB，禁止全维无脑解压）；每维度上限 `MAP_REGIONS_MAX_PER_DIM`（超限按插入序淘汰最旧，告警集与瓦片独立）；持久化 `<dim>.regions.json`（键 "rx,rz" → {"x","s","b"}，与瓦片同款 tmp+os.replace 原子写，无内容不产生空文件）
 - 合成快照时把调色板里下标 > 0 的**纯黑**抬成 `(0, 0, 1)`（`_BLACK_FIX`）：纯黑在快照里
   是「未探索」占位色，不抬就会被画成暗色遮罩
 - 快照必须带 `revision`（无数据态恒 0），前端靠它做「未变化即跳过重解码」的指纹
-- 瓦片/调色板持久化到 `data_dir/map/<安全服务器名>/`，节流 ≥5s 落盘，`terminate` 时 flush
+- 瓦片/区域/调色板持久化到 `data_dir/map/<安全服务器名>/`（每维度 `<dim>.json` + `<dim>.regions.json`），节流 ≥5s 落盘，`terminate` 时 flush
 
 前端（闪烁禁忌，都是踩过的坑）：
 
@@ -288,7 +290,7 @@ SecurityError**，不是返回空——任何「try/catch 包一下就能用」�
 conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、
 会话 UMO 归一/隔离对话同群全成员匹配、目标会话去重、自消息与重复投递拦截、
 `mc target` 免 UMO 绑定、方块地图无数据契约与 API、zlib-pal8 解码/sha1 去重/
-调色板换 id 与换色清瓦片/纯黑夹紧/快照 revision/模组维度动态登记与持久化、
+调色板换 id 与换色清瓦片+区域/区域全量流端到端（512² 稀疏落位·bbox 并集·xor 留档与仅变不 bump·区域底层与瓦片叠加幂等·<dim>.regions.json 持久化往返）/纯黑夹紧/快照 revision/模组维度动态登记与持久化、
 地图事件旁路消费与 `map_enabled` 门控、前端动态维度与状态行定高守卫、
 方块地图跨维度玩家清单 `players()`（仅 player_move 可定位 / 新鲜度 / 禁用空态 / Web API 冒烟）。
 

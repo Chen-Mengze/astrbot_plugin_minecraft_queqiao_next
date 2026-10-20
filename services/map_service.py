@@ -1,6 +1,6 @@
 """方块地图数据服务（Web 面板游戏顶层方块地图）：真实数据链路（无演示数据）。
 
-真实数据来自服务端 mod「QueQiao-Map-Web」，经鹊桥事件桥以 4 类 notice 事件
+真实数据来自服务端 mod「QueQiao-Map-Web」，经鹊桥事件桥以 5 类 notice 事件
 推送；main 层按 sub_type 拦截后把事件对象交给 MapService.handle_event
 （载荷经 event.payload 原始字典透传）：
 
@@ -14,6 +14,12 @@
   size 为每边区块数（勿硬编码白名单，按解码长度校验兜底）；sha1 为
   **zlib 压缩字节**（b64 之前）的摘要，作去重键；按 (dim, cx, cz, size)
   位置键覆盖写幂等（重连可能重放）；
+- 「map_region」：「zlib-pal8」区域（side 固定 512，32×32 区块 = 512×512
+  像素，rx/rz 为 MC 区域坐标可负）：初次连接全量补发已加载的二维区域 +
+  断点续传——服务端按 (dim,rx,rz)+xor 内容指纹（Xaero 式，未压缩库内容）
+  决定重发，消费端只留档 xor（记日志/排障），去重仍按自算 sha1（zlib
+  压缩字节摘要）；区域到达 = 整块替换该 512×512；与 map_tile 叠加幂等：
+  合成先画区域做底层、瓦片局部覆盖，与事件到达顺序无关；
 - 「player_move」：玩家位置批量 upsert（按 uuid 键，uuid 缺失退 nickname）；
   无离线事件，超过 MAP_PLAYER_STALE_SECONDS 未更新即在快照 players 中缺席。
 
@@ -21,15 +27,17 @@
 循环抛出（handle_event 内部 try/except + logger.warning，带
 「[{PLUGIN_NAME}][{server_name}]」前缀）。
 
-**无数据语义**：未收到过真实流（调色板 + 至少存过 1 片瓦片）的服务器
+**无数据语义**：未收到过真实流（调色板 + 至少存过 1 片瓦片或区域）的服务器
 不生成任何演示数据——status/snapshot 返回 source=none，reason 说明原因
 （未收到事件 MAP_NO_DATA_REASON / 开关关闭 MAP_DISABLED_REASON），快照
-bbox=null、tiles 空串、players 空；有真实流但该维度零瓦片时给「未探索」
-全黑小窗（以该维度最新鲜玩家为中心 ±112）。
+bbox=null、tiles 空串、players 空；有真实流但该维度零瓦片且零区域时给
+「未探索」全黑小窗（以该维度最新鲜玩家为中心 ±112）。
 
 **磁盘持久化**（解决「palette 每连接只发一次、AstrBot 重启后收不到重发」）：
 <data_dir>/map/<safe_server>/meta.json（调色板 id、colors 原 hex 串、上报
-维度、各维度更新时间）+ 每维度 <dim>.json（瓦片存 zlib 压缩字节 b64）；
+维度、各维度更新时间）+ 每维度 <dim>.json（瓦片存 zlib 压缩字节 b64）
++ 每维度 <dim>.regions.json（区域压缩字节 b64，键 "rx,rz"，值
+{"x":xor 留档,"s":自算 sha1,"b":b64}）；
 写入为 tmp 文件 + os.replace 原子替换（threading.Lock 保护），脏标记 +
 节流（距上次落盘 ≥5s 且再有事件才同步落盘），flush() 立即落盘
 （main terminate 接线）。
@@ -70,16 +78,18 @@ from ..core.constants import (
     MAP_SUB_DIMENSIONS,
     MAP_SUB_PALETTE,
     MAP_SUB_PLAYER_MOVE,
+    MAP_SUB_REGION,
     MAP_SUB_TILE,
     MAP_TILE_FORMAT,
     PLUGIN_NAME,
 )
 
-# 本模块消费的 4 类 sub_type（禁止 import MAP_EVENT_SUB_TYPES——main 层专用）
+# 本模块消费的 5 类 sub_type（禁止 import MAP_EVENT_SUB_TYPES——main 层专用）
 _HANDLED_SUB_TYPES = (
     MAP_SUB_DIMENSIONS,
     MAP_SUB_PALETTE,
     MAP_SUB_TILE,
+    MAP_SUB_REGION,
     MAP_SUB_PLAYER_MOVE,
 )
 
@@ -88,6 +98,15 @@ _HANDLED_SUB_TYPES = (
 # 0.5–2 KB、摊销约 20 B/区块；20000 片 = 128 万区块、压缩态约 10–40 MB，
 # 已覆盖超大地图；超出按插入序淘汰最旧（一次性告警）
 MAP_TILES_MAX_PER_DIM = 20000
+# 每 (server, dim) 区域上限：单区域压缩后典型 15–60 KB（512×512 pal8 原始
+# 256 KB → zlib，INTEGRATION.md §3.5 预算）；2048 块 = 2048×1024 区块 ≈
+# 2.1M 区块（≈536M 方块列）覆盖，与瓦片上限 MAP_TILES_MAX_PER_DIM=20000
+# （全按 8×8 片计 1.28M 区块）覆盖面积同一量级，压缩态约 30–120 MB；
+# 超出按插入序淘汰最旧（一次性告警）
+MAP_REGIONS_MAX_PER_DIM = 2048
+# map_region 区域位图边长：32×32 区块 = 512×512 像素（1 像素 = 1 方块列）；
+# 解码与 zlib-pal8 瓦片完全同构，仅 side 固定为此值
+MAP_REGION_SIDE = 512
 # 快照合成窗口边长上限：576 = 4.5 个 8×8 瓦片（128 方块/片）；RGB 上限
 # 576*576*3 ≈ 1 MB/快照，base64 后约 1.3 MB，面板轮询带宽可接受
 MAP_SNAPSHOT_BBOX_MAX = 576
@@ -150,6 +169,11 @@ class _ServerMapState:
         # dict 保持插入序，供超限时按插入序淘汰最旧
         self.tiles: dict[tuple[str, int, int, int], tuple[str, bytes]] = {}
         self.dim_tile_count: dict[str, int] = {}
+        # 区域：(dim, rx, rz) -> (xor 留档, 自算 sha1, zlib 压缩字节)；dict
+        # 保持插入序，供超限时按插入序淘汰最旧。xor 是服务端地图库内容校验
+        # （Xaero 式，续传重发判定在服务端做），消费端只留档排障不参与去重
+        self.regions: dict[tuple[str, int, int], tuple[int, str, bytes]] = {}
+        self.dim_region_count: dict[str, int] = {}
         # 每维度 revision：瓦片实际变化才 bump，供快照合成缓存失效
         self.revision: dict[str, int] = {}
         # 每维度最近一次瓦片变化时间（落盘 meta，排障用）
@@ -162,14 +186,17 @@ class _ServerMapState:
         # 玩家：key=uuid（缺失退 nickname）→ {name,x,y,z,dimension,updated_at}
         self.players: dict[str, dict[str, Any]] = {}
         self.last_event_at: float = 0.0
-        # 曾存过至少 1 片瓦片的历史标记（status/snapshot 真实流判定门槛之一）
+        # 曾存过至少 1 片瓦片或区域的历史标记（status/snapshot 真实流判定门槛之一；
+        # 变量名沿用 ever_tile，语义已扩为瓦片∪区域）
         self.ever_tile: bool = False
         # 落盘状态
         self.dirty: bool = False
         self.last_flush_at: float = 0.0
-        # 去重告警：未映射维度 / 超限淘汰各只告警一次
+        # 去重告警：未映射维度 / 瓦片超限淘汰 / 区域超限淘汰各只告警一次
+        # （瓦片与区域淘汰告警互相独立，不共用集合）
         self.warned_dims: set[str] = set()
         self.warned_evict: set[str] = set()
+        self.warned_evict_region: set[str] = set()
         # 快照合成缓存：dim -> (bbox, 该维度 revision, tiles_b64)，每维度单条
         self.snapshot_cache: dict[
             str, tuple[tuple[int, int, int, int], int, str]
@@ -217,7 +244,7 @@ class MapService:
     # ---- 事件接收（main 层按 sub_type 拦截后透传事件对象） ----
 
     def handle_event(self, server_name: str, event: Any) -> bool:
-        """消费 4 类地图 notice 事件；未知 sub_type 返回 False，否则恒 True。
+        """消费 5 类地图 notice 事件；未知 sub_type 返回 False，否则恒 True。
 
         载荷取 getattr(event, "payload", None) or {}（原始字典，含 sub_type）；
         任何解析异常都在内部吞掉并告警，绝不向事件循环抛出。
@@ -236,6 +263,8 @@ class MapService:
                 self._apply_palette(server_name, payload)
             elif sub_type == MAP_SUB_TILE:
                 self._apply_tile(server_name, payload)
+            elif sub_type == MAP_SUB_REGION:
+                self._apply_region(server_name, payload)
             elif sub_type == MAP_SUB_PLAYER_MOVE:
                 self._apply_player_move(server_name, payload)
             else:
@@ -351,7 +380,7 @@ class MapService:
             )
         self._touch(st, dirty=False)
 
-    # ---- 四类事件的解析落地 ----
+    # ---- 五类事件的解析落地 ----
 
     def _apply_dimensions(self, server_name: str, payload: dict[str, Any]) -> None:
         """map_dimensions：整体替换上报维度清单，模组维度按需登记短名。"""
@@ -382,8 +411,8 @@ class MapService:
         - 非法色项 ⇒ 整盘拒绝并告警（宁缺勿错色）；
         - 超过 256 项 ⇒ 截断保留前 256 并告警；
         - id 变化**或颜色内容变化**（部分实现 id 为空/固定）⇒ 替换调色板并清空
-          该服务器全部已存瓦片（旧瓦片按旧调色板量化，混用会错色），并 bump
-          各维度 revision 使快照缓存失效。
+          该服务器全部已存瓦片与区域（两者同按旧调色板量化，混用会错色），
+          并对瓦片∪区域涉及的各维度 bump revision 使快照缓存失效。
         """
         pid = payload.get("id")
         pid = pid if isinstance(pid, str) else ""
@@ -414,17 +443,21 @@ class MapService:
         # 只认 id 会让新旧量化混用而错色。
         colors_changed = parsed != st.palette_colors
         if pid != st.palette_id or colors_changed:
-            stale = len(st.tiles)
-            if stale:
-                # 旧瓦片按旧调色板量化，必须整服清空
-                for dim in {k[0] for k in st.tiles}:
+            stale_tiles = len(st.tiles)
+            stale_regions = len(st.regions)
+            if stale_tiles or stale_regions:
+                # 旧瓦片/区域同按旧调色板量化，必须整服清空
+                for dim in {k[0] for k in st.tiles} | {k[0] for k in st.regions}:
                     st.revision[dim] = st.revision.get(dim, 0) + 1
                 st.tiles.clear()
                 st.dim_tile_count.clear()
+                st.regions.clear()
+                st.dim_region_count.clear()
             st.snapshot_cache.clear()
             logger.info(
                 f"[{PLUGIN_NAME}][{server_name}] 收到调色板"
-                f"（{st.palette_id or '无'} → {pid or '?'}），清空旧瓦片 {stale} 片"
+                f"（{st.palette_id or '无'} → {pid or '?'}），清空旧瓦片"
+                f" {stale_tiles} 片 / 旧区域 {stale_regions} 块"
                 + ("（颜色内容变化）" if colors_changed else "")
             )
         st.palette_id = pid
@@ -566,6 +599,144 @@ class MapService:
             self._touch(st)
         self._maybe_flush(server_name, st)
 
+    def _apply_region(self, server_name: str, payload: dict[str, Any]) -> None:
+        """map_region：解码 zlib-pal8 区域（side 固定 MAP_REGION_SIDE），按位置键整块覆盖。
+
+        - 解码与 map_tile 完全一致，仅 side 固定 512（32×32 区块 = 512×512
+          像素）；rx/rz 为 MC 区域坐标（可负，无 size 字段）；
+        - 区域到达 = 整块替换该 512×512；合成时区域为底层、瓦片局部覆盖
+          （叠加幂等，与到达顺序无关）；
+        - xor 是服务端地图库内容指纹（Xaero 式）：断点续传的重发判定在服务端
+          （xor 不变不重发），消费端只留档（记日志/排障），去重用自算 sha1
+          （zlib 压缩字节摘要）；缺失按 0 存；
+        - 其余校验链与 _apply_tile 完全对齐：调色板未到 ⇒ 整批丢弃；条目非
+          dict 跳过；未知 format 跳过告警；b64 validate=True；解压后长度必须
+          等于 MAP_REGION_SIDE² 否则丢弃；同位置同自算 sha1 跳过不 bump
+          revision（xor 变了只更新留档 tuple）；按位置键覆盖写幂等。
+        """
+        dim_raw = payload.get("dimension")
+        st = self._state(server_name)
+        dim = self._dim_short(server_name, st, dim_raw)
+        if dim is None:
+            self._warn_unmapped_dim(server_name, st, dim_raw)
+            return
+        regions = payload.get("regions")
+        if not isinstance(regions, list):
+            logger.warning(
+                f"[{PLUGIN_NAME}][{server_name}] map_region 载荷缺 regions"
+                " 或非列表，忽略"
+            )
+            return
+        if not st.palette_colors:
+            logger.warning(
+                f"[{PLUGIN_NAME}][{server_name}] 调色板尚未收到，丢弃本次"
+                f" {len(regions)} 块 {dim} 区域（上游保证 palette 先于 region/tile）"
+            )
+            self._touch(st, dirty=False)
+            return
+        changed = False
+        for item in regions:
+            if not isinstance(item, dict):
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域条目非 dict，跳过"
+                )
+                continue
+            fmt = item.get("format")
+            if fmt != MAP_TILE_FORMAT:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域编码 format="
+                    f"{fmt!r} 不受支持（期望 {MAP_TILE_FORMAT!r}），跳过"
+                )
+                continue
+            rx = _as_int(item.get("rx"))
+            rz = _as_int(item.get("rz"))
+            if rx is None or rz is None:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域坐标非法"
+                    f"（rx={item.get('rx')!r}, rz={item.get('rz')!r}），跳过"
+                )
+                continue
+            b64 = item.get("b64")
+            if not isinstance(b64, str) or not b64:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) 缺 b64，跳过"
+                )
+                continue
+            try:
+                # validate=True：非字母表字符直接报错而非静默丢字符
+                comp = base64.b64decode(b64, validate=True)
+            except ValueError:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) b64 解码失败，跳过"
+                )
+                continue
+            digest = hashlib.sha1(comp).hexdigest()
+            claimed = item.get("sha1")
+            if not isinstance(claimed, str):
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) 缺 sha1，按自算摘要去重"
+                )
+            elif claimed.lower() != digest:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) 声称 sha1 {claimed!r} 与自算 {digest}"
+                    " 不符，按自算值继续"
+                )
+            try:
+                raw = zlib.decompress(comp)
+            except zlib.error as exc:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) zlib 解压失败，跳过: {exc}"
+                )
+                continue
+            if len(raw) != MAP_REGION_SIDE * MAP_REGION_SIDE:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dim} 区域"
+                    f" ({rx},{rz}) 解码长度 {len(raw)} ≠"
+                    f" {MAP_REGION_SIDE * MAP_REGION_SIDE}，丢弃"
+                )
+                continue
+            xor_v = _as_int(item.get("xor"))
+            xor = 0 if xor_v is None else xor_v
+            pos = (dim, rx, rz)
+            prev = st.regions.get(pos)
+            if prev is not None and prev[1] == digest:
+                # 同位置同压缩摘要：内容一致，不 bump revision；
+                # 服务端指纹 xor 变了则只更新留档 tuple（续传排障用）
+                if prev[0] != xor:
+                    st.regions[pos] = (xor, digest, prev[2])
+                continue
+            st.regions[pos] = (xor, digest, comp)
+            if prev is None:
+                st.dim_region_count[dim] = st.dim_region_count.get(dim, 0) + 1
+            changed = True
+            # 每 (server, dim) 超限：按插入序淘汰最旧（一次性告警）
+            while st.dim_region_count.get(dim, 0) > MAP_REGIONS_MAX_PER_DIM:
+                victim = next(
+                    (k for k in st.regions if k[0] == dim and k != pos), pos
+                )
+                del st.regions[victim]
+                st.dim_region_count[dim] -= 1
+                if dim not in st.warned_evict_region:
+                    st.warned_evict_region.add(dim)
+                    logger.warning(
+                        f"[{PLUGIN_NAME}][{server_name}] {dim} 区域数超过上限"
+                        f" {MAP_REGIONS_MAX_PER_DIM}，按插入序淘汰最旧区域"
+                        "（后续淘汰不再告警）"
+                    )
+        if changed:
+            now = self._touch(st)
+            st.ever_tile = True
+            st.revision[dim] = st.revision.get(dim, 0) + 1
+            st.dim_updated_at[dim] = now
+        else:
+            self._touch(st)
+        self._maybe_flush(server_name, st)
+
     def _apply_player_move(self, server_name: str, payload: dict[str, Any]) -> None:
         """player_move：按 uuid（缺失退 nickname）批量 upsert 玩家位置。
 
@@ -626,7 +797,7 @@ class MapService:
         """某台服务器的地图数据源状态（无任何演示数据）。
 
         map_enabled=false ⇒ source=none + MAP_DISABLED_REASON；
-        收到过调色板且至少存过 1 片瓦片 ⇒ 真实流（source=MAP_SOURCE_REAL）；
+        收到过调色板且至少存过 1 片瓦片或区域 ⇒ 真实流（source=MAP_SOURCE_REAL）；
         其余（未收到真实事件）⇒ source=none + MAP_NO_DATA_REASON。
 
         dimensions 恒为「内置三维度 + 已登记模组维度」（前端据此生成页签），
@@ -831,6 +1002,16 @@ class MapService:
             if d == dimension
         ]
 
+    def _dim_regions(
+        self, st: _ServerMapState, dimension: str
+    ) -> list[tuple[int, int, tuple[int, str, bytes]]]:
+        """该维度全部区域 (rx, rz, (xor, sha1, 压缩字节))，插入序。"""
+        return [
+            (rx, rz, val)
+            for (d, rx, rz), val in st.regions.items()
+            if d == dimension
+        ]
+
     def _real_snapshot(
         self,
         server_name: str,
@@ -838,12 +1019,13 @@ class MapService:
         dimension: str,
         now: float,
     ) -> dict[str, Any]:
-        """真实流快照：有瓦片按并集 bbox 合成；零瓦片维度给全黑未探索小窗。"""
+        """真实流快照：有瓦片/区域按并集 bbox 合成；双零维度给全黑未探索小窗。"""
         fresh = self._fresh_player_entries(st, dimension, now)
         tiles = self._dim_tiles(st, dimension)
-        if tiles:
+        regions = self._dim_regions(st, dimension)
+        if tiles or regions:
             bbox, tiles_b64 = self._compose_tiles(
-                server_name, st, dimension, tiles, fresh
+                server_name, st, dimension, tiles, fresh, regions
             )
         else:
             bbox, tiles_b64 = self._blank_window(fresh)
@@ -887,22 +1069,38 @@ class MapService:
         dimension: str,
         tiles: list[tuple[int, int, int, tuple[str, bytes]]],
         fresh: list[dict[str, Any]],
+        regions: list[tuple[int, int, tuple[int, str, bytes]]],
     ) -> tuple[tuple[int, int, int, int], str]:
         """按 bbox 合成 W*H*3 行优先 RGB 并 base64。
 
-        bbox = 该维度全部瓦片块级矩形并集（x∈[cx*16,(cx+size)*16)）；并集
-        w 或 h 超上限时，以新鲜玩家均值（无则瓦片质心）为中心取
-        ≤MAP_SNAPSHOT_BBOX_MAX 窗口并夹在并集内。命中瓦片且下标 >0 →
-        调色板色；下标 0 / 未覆盖 / 下标越界（调色板被截断）→ (0,0,0)。
-        (0,0,0) 同时是「未探索」的占位色，因此调色板里合法的纯黑项抬为
-        (0,0,1)：肉眼看仍是黑，但能与未探索像素区分（否则整片纯黑区域会
-        被前端当作雾盖掉）。
+        bbox = 该维度全部瓦片块级矩形（x∈[cx*16,(cx+size)*16)）与区域矩形
+        （x∈[rx*512,(rx+1)*512)）的并集；并集 w 或 h 超上限时，以新鲜玩家
+        均值（无则并集质心）为中心取 ≤MAP_SNAPSHOT_BBOX_MAX 窗口并夹在
+        并集内。绘制顺序 = 区域先做底层、瓦片后局部覆盖（叠加幂等，与事件
+        到达顺序无关）；区域先做窗口相交判定、相交才解压（单区域解压出
+        256 KB，禁止全维无脑解压）。命中区域/瓦片且下标 >0 → 调色板色；
+        下标 0 / 未覆盖 / 下标越界（调色板被截断）→ (0,0,0)。(0,0,0) 同时
+        是「未探索」的占位色，因此调色板里合法的纯黑项抬为 (0,0,1)：肉眼
+        看仍是黑，但能与未探索像素区分（否则整片纯黑区域会被前端当作雾
+        盖掉）。
         结果按 (dimension, revision, bbox) 缓存，每维度单条。
         """
-        minx = min(cx * 16 for cx, _, _, _ in tiles)
-        maxx = max((cx + size) * 16 for cx, _, size, _ in tiles)
-        minz = min(cz * 16 for _, cz, _, _ in tiles)
-        maxz = max((cz + size) * 16 for _, cz, size, _ in tiles)
+        minx = min(
+            [cx * 16 for cx, _, _, _ in tiles]
+            + [rx * MAP_REGION_SIDE for rx, _, _ in regions]
+        )
+        maxx = max(
+            [(cx + size) * 16 for cx, _, size, _ in tiles]
+            + [(rx + 1) * MAP_REGION_SIDE for rx, _, _ in regions]
+        )
+        minz = min(
+            [cz * 16 for _, cz, _, _ in tiles]
+            + [rz * MAP_REGION_SIDE for _, rz, _ in regions]
+        )
+        maxz = max(
+            [(cz + size) * 16 for _, cz, size, _ in tiles]
+            + [(rz + 1) * MAP_REGION_SIDE for _, rz, _ in regions]
+        )
         win_minx, win_minz, win_maxx, win_maxz = minx, minz, maxx, maxz
         if maxx - minx > MAP_SNAPSHOT_BBOX_MAX:
             cx0 = (
@@ -930,6 +1128,48 @@ class MapService:
         out = bytearray(w * h * 3)  # 默认 (0,0,0)：未覆盖 / 未设置
         colors = st.palette_colors
         n_colors = len(colors)
+        # 先画区域做底层；窗口不相交直接跳过，禁止无脑解压（单区域 256 KB）
+        for rx, rz, (_, _, comp) in regions:
+            rx0 = rx * MAP_REGION_SIDE
+            rz0 = rz * MAP_REGION_SIDE
+            px_lo = max(0, win_minx - rx0)
+            px_hi = min(MAP_REGION_SIDE, win_maxx - rx0)
+            pz_lo = max(0, win_minz - rz0)
+            pz_hi = min(MAP_REGION_SIDE, win_maxz - rz0)
+            if px_lo >= px_hi or pz_lo >= pz_hi:
+                continue
+            try:
+                raw = zlib.decompress(comp)
+            except zlib.error as exc:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dimension} 区域"
+                    f" ({rx},{rz}) 合成时解压失败，跳过: {exc}"
+                )
+                continue
+            if len(raw) != MAP_REGION_SIDE * MAP_REGION_SIDE:
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{server_name}] {dimension} 区域"
+                    f" ({rx},{rz}) 合成时长度 {len(raw)} ≠"
+                    f" {MAP_REGION_SIDE * MAP_REGION_SIDE}，跳过"
+                )
+                continue
+            n = px_hi - px_lo
+            for pz in range(pz_lo, pz_hi):
+                row_cells = (rz0 + pz - win_minz) * w + (rx0 + px_lo - win_minx)
+                src = pz * MAP_REGION_SIDE + px_lo
+                for k in range(n):
+                    idx = raw[src + k]
+                    if idx == 0 or idx >= n_colors:
+                        continue
+                    color = colors[idx]
+                    if color == (0, 0, 0):
+                        # 合法纯黑 ≠ 未探索：抬 1 个蓝分量避免被前端当雾
+                        color = _BLACK_FIX
+                    o = (row_cells + k) * 3
+                    out[o] = color[0]
+                    out[o + 1] = color[1]
+                    out[o + 2] = color[2]
+        # 后画瓦片：局部覆盖在区域之上（瓦片胜出，叠加幂等）
         for cx, cz, size, (_, comp) in tiles:
             try:
                 raw = zlib.decompress(comp)
@@ -1011,8 +1251,8 @@ class MapService:
     def _load_server_dir(self, entry: Path) -> _ServerMapState | None:
         """加载单台服务器的持久化目录；无任何有效内容时返回 None。
 
-        瓦片不校验 sha1/解压（启动性能），只校验 b64 可解码；内容级损坏由
-        快照合成时的解压/长度校验兜住。
+        瓦片/区域不校验 sha1/解压（启动性能），只校验 b64 可解码；内容级
+        损坏由快照合成时的解压/长度校验兜住。
         """
         st = _ServerMapState()
         meta_path = entry / "meta.json"
@@ -1076,18 +1316,45 @@ class MapService:
         for f in sorted(entry.glob("*.json")):
             if f.name == "meta.json":
                 continue
-            dim = f.stem
+            stem = f.stem
+            # 区域文件名 <dim>.regions.json，stem 是 "<dim>.regions"——先剥
+            # 后缀再校验 known_dims（"overworld.regions" ≠ 合法维度短名）
+            is_region = stem.endswith(".regions")
+            dim = stem[: -len(".regions")] if is_region else stem
             if dim not in known_dims:
                 continue
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 logger.warning(
-                    f"[{PLUGIN_NAME}][{entry.name}] 瓦片文件 {f.name} 损坏，跳过:"
-                    f" {exc!r}"
+                    f"[{PLUGIN_NAME}][{entry.name}] 持久化文件 {f.name} 损坏，"
+                    f"跳过: {exc!r}"
                 )
                 continue
             if not isinstance(data, dict):
+                continue
+            if is_region:
+                for key_s, val in data.items():
+                    pos = self._parse_region_key(key_s)
+                    if pos is None or not isinstance(val, dict):
+                        continue
+                    sha1v = val.get("s")
+                    b64v = val.get("b")
+                    if not isinstance(sha1v, str) or not isinstance(b64v, str):
+                        continue
+                    try:
+                        comp = base64.b64decode(b64v, validate=True)
+                    except ValueError:
+                        continue
+                    xors = _as_int(val.get("x"))
+                    st.regions[(dim, *pos)] = (
+                        0 if xors is None else xors,
+                        sha1v,
+                        comp,
+                    )
+                    st.dim_region_count[dim] = (
+                        st.dim_region_count.get(dim, 0) + 1
+                    )
                 continue
             for key_s, val in data.items():
                 pos = self._parse_tile_key(key_s)
@@ -1103,10 +1370,14 @@ class MapService:
                     continue
                 st.tiles[(dim, *pos)] = (sha1v, comp)
                 st.dim_tile_count[dim] = st.dim_tile_count.get(dim, 0) + 1
-        if st.tiles:
+        if st.tiles or st.regions:
             st.ever_tile = True
         if not (
-            st.tiles or st.palette_colors or st.reported_dimensions or st.dyn_dims
+            st.tiles
+            or st.regions
+            or st.palette_colors
+            or st.reported_dimensions
+            or st.dyn_dims
         ):
             return None
         return st
@@ -1128,10 +1399,28 @@ class MapService:
         return cx, cz, size
 
     @staticmethod
+    def _parse_region_key(key_s: Any) -> tuple[int, int] | None:
+        """持久化区域键 "rx,rz" → (rx, rz)；非法返回 None（坐标可负）。"""
+        if not isinstance(key_s, str):
+            return None
+        parts = key_s.split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            rx, rz = (int(p) for p in parts)  # 持久化键是数字字符串
+        except ValueError:
+            return None
+        return rx, rz
+
+    @staticmethod
     def _all_dims(st: _ServerMapState) -> list[str]:
-        """需落盘的维度短名：内置三维度 + 已登记模组维度 + 现存瓦片维度。"""
+        """需落盘的维度短名：内置三维度 + 已登记模组维度 + 现存瓦片/区域维度。"""
         ordered: list[str] = list(MAP_DIMENSIONS)
-        for short in list(st.dyn_dims.values()) + [k[0] for k in st.tiles]:
+        for short in (
+            list(st.dyn_dims.values())
+            + [k[0] for k in st.tiles]
+            + [k[0] for k in st.regions]
+        ):
             if short not in ordered:
                 ordered.append(short)
         return ordered
@@ -1162,10 +1451,22 @@ class MapService:
                         "s": sha1v,
                         "b": base64.b64encode(comp).decode("ascii"),
                     }
-                if not dim_tiles and not (d / f"{dim}.json").is_file():
-                    # 无瓦片且无旧文件：不产生空文件
-                    continue
-                self._atomic_write_json(d / f"{dim}.json", dim_tiles)
+                # 瓦片与区域两个文件各自独立落盘：同维度只有其一时
+                # 另一类也必须正常写（不得互相 continue 短路）
+                if dim_tiles or (d / f"{dim}.json").is_file():
+                    self._atomic_write_json(d / f"{dim}.json", dim_tiles)
+                # 无内容且无旧文件：不产生空文件（两类同逻辑）
+                dim_regions: dict[str, dict[str, Any]] = {}
+                for (dd, rx, rz), (xor_v, sha1v, comp) in st.regions.items():
+                    if dd != dim:
+                        continue
+                    dim_regions[f"{rx},{rz}"] = {
+                        "x": xor_v,  # 服务端内容指纹留档（续传排障）
+                        "s": sha1v,
+                        "b": base64.b64encode(comp).decode("ascii"),
+                    }
+                if dim_regions or (d / f"{dim}.regions.json").is_file():
+                    self._atomic_write_json(d / f"{dim}.regions.json", dim_regions)
             st.dirty = False
             st.last_flush_at = time.time()
         except (OSError, ValueError, TypeError) as exc:
