@@ -1,11 +1,18 @@
 # Changelog
 
-## [Unreleased]
+## v0.8.0 (2026-11-06)
+
+> 独立维护的新起点：插件更名为 astrbot_plugin_minecraft_queqiao_next，与上游彻底分离
 
 ### 修复
 - **Forge 服务器 TPS 显示不可用**：Forge/NeoForge 的 `/forge tps` 只输出单个平均 TPS（`Mean TPS: 20.000`），此前无法解析导致面板显示不可用；现在正常显示单个 TPS 值，不再误标 1m/5m/15m
 - **TPS 指令自动匹配错服**：服务端类型不再只靠延迟探测识别（延迟探测地址留空也能识别，优先用鹊桥上报的类型，其次看 SLP 版本名 / MOTD，最后按实测指令推断），NeoForge 不再被误判成 Forge；识别不到时自动依次尝试常用 TPS 指令，成功后记住该服务器可用的那条，全部失败时提示里会列出已尝试的指令
 - **群聊消息只有一人能转发**：同一群里此前只有配置目标会话时发过 `/sid` 的那位成员消息能转发进游戏，其他人全部失效；现在同群所有成员的消息都能正常转发，`mc` 指令也不再受发送者影响
+
+### 变更
+- **插件更名为独立维护版本**：插件标识改为 `astrbot_plugin_minecraft_queqiao_next`，仓库迁至 [Chen-Mengze/astrbot_plugin_minecraft_queqiao_next](https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next)，WebUI 里显示的名字仍是「Minecraft 鹊桥互通」；本仓库自 2026-11-06 起独立维护、不再与上游同步，请不要与上游版本同时安装（会重复连接鹊桥、消息重复转发）
+- **升级后数据自动迁移**：插件数据目录随之改为 `astrbot_plugin_minecraft_queqiao_next`，首次启动会自动从旧目录复制绑定、面板偏好、互通终端日志与监控数据（只复制不删除，新目录已有数据时不覆盖）；配置项需要在新插件的配置页重新填写
+- **许可证声明补充**：项目基于上游项目的修改继续以 AGPL-3.0 发布，`LICENSE` 中补充了本项目与上游的版权及修改声明
 
 ### 移除
 - **转发贴表情回执**：转发消息成功后不再给原消息贴表情；「转发提醒方式」（`mark_option`）只保留 `text`（文字提醒）与 `none`（不提醒），旧配置里的 `emoji` 自动按不提醒处理

@@ -13,7 +13,7 @@
  * 面板内「📝 JSON 模式」按钮保留双向手动切换（不触发返回）。
  * 保存成功后派发 queqiao:config-saved 事件，dashboard 监听后刷新面板。
  */
-const PLUGIN_PATH = 'astrbot_plugin_minecraft_queqiao';
+const PLUGIN_PATH = 'astrbot_plugin_minecraft_queqiao_next';
 
 const el = (id) => document.getElementById(id);
 const bridge = window.AstrBotPluginPage || null;

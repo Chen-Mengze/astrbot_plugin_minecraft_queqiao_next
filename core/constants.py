@@ -3,8 +3,11 @@
 本模块位于依赖链最底层，不得 import 本插件其它模块。
 """
 
-PLUGIN_NAME = "astrbot_plugin_minecraft_queqiao"
-PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao"
+PLUGIN_NAME = "astrbot_plugin_minecraft_queqiao_next"
+PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao_next"
+# 旧插件名（本仓库上游同名）：插件更名后 AstrBot 会按新名字给全新的数据目录，
+# 启动时把旧目录内容复制过来，避免用户升级后丢绑定/面板偏好/终端日志
+LEGACY_PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao"
 
 # ---- 鹊桥 API 名称（V2，鹊桥 >= v0.2.11） ----
 

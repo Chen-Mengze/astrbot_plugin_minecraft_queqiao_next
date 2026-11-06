@@ -1,4 +1,4 @@
-"""astrbot_plugin_minecraft_queqiao — AstrBot 插件
+"""astrbot_plugin_minecraft_queqiao_next — AstrBot 插件
 
 通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通、服务器管理与 AI 聊天。
 配置结构参照 astrbot_plugin_minecraft_adapter，连接层改用鹊桥 V2 协议。
@@ -7,6 +7,7 @@
 import asyncio
 import contextlib
 import re
+import shutil
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -22,6 +23,7 @@ from .core.constants import (
     DEFAULT_IMAGE_UPLOAD_TIMEOUT,
     DEFAULT_QUIET_HOURS_END,
     DEFAULT_QUIET_HOURS_START,
+    LEGACY_PLUGIN_DATA_DIR,
     PLUGIN_DATA_DIR,
     PLUGIN_NAME,
     QUIET_HOURS_ITEM_KEYS,
@@ -62,12 +64,49 @@ DEFAULT_TIMEOUT = 30
 TEMPLATE_KEY_BUILTIN_HTTP = "builtin_http"
 
 
+def _migrate_legacy_data_dir(
+    data_dir: Path, legacy_dir: Path | None = None
+) -> None:
+    """把旧插件名的数据目录内容复制到新数据目录（只复制、不删除旧目录）。
+
+    插件更名后 AstrBot 会给出一个全新的空数据目录，旧目录里的绑定、面板偏好、
+    终端日志与监控采样不会自动跟过来；首次启动复制一次即可，旧目录保留以便回滚。
+    只在新目录不存在或为空时执行，避免覆盖升级后已产生的新数据。
+
+    参数:
+        data_dir: 新数据目录（PLUGIN_DATA_DIR 对应）。
+        legacy_dir: 旧数据目录；缺省取新目录同级的 LEGACY_PLUGIN_DATA_DIR，
+            测试可注入临时路径。
+    """
+    # 旧插件走同一套 get_data_dir 规则，其数据目录必为新目录的同级兄弟；
+    # 直接拼同级路径而不是再调 get_data_dir，避免无旧数据时凭空建出空目录
+    legacy = (
+        data_dir.parent / LEGACY_PLUGIN_DATA_DIR
+        if legacy_dir is None
+        else legacy_dir
+    )
+    if legacy == data_dir:
+        return
+    try:
+        if not legacy.exists():
+            return
+        if data_dir.exists() and any(data_dir.iterdir()):
+            return
+        shutil.copytree(legacy, data_dir, dirs_exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            f"[{PLUGIN_NAME}] ⚠️ 迁移旧数据目录 {legacy} 失败，继续启动: {exc}"
+        )
+        return
+    logger.info(f"[{PLUGIN_NAME}] 已从旧数据目录 {legacy} 复制数据到 {data_dir}")
+
+
 @register(
     PLUGIN_NAME,
-    "XTsat",
+    "Chen-Mengze",
     "通过鹊桥模组连接 Minecraft 服务器，实现消息互通、服务器管理与 AI 聊天",
-    "v0.7.1",
-    "https://github.com/XTsat/astrbot_plugin_minecraft_queqiao",
+    "v0.8.0",
+    "https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next",
 )
 class MinecraftQueQiaoPlugin(Star):
     """Minecraft 鹊桥互通主插件类。"""
@@ -77,6 +116,7 @@ class MinecraftQueQiaoPlugin(Star):
         self.config = config
 
         data_dir = Path(StarTools.get_data_dir(PLUGIN_DATA_DIR))
+        _migrate_legacy_data_dir(data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         self._data_dir = data_dir
 

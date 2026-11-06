@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft 鹊桥互通</h1>
 <p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.7.1-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.8.0-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
@@ -363,10 +363,12 @@ TPS 与延迟监控**默认开启、无需配置**：后台定期采集并持久
 
 ### 安装
 
-1. 将本插件放入 AstrBot 的 `data/plugins/` 目录，重启 AstrBot
+1. 从 [Chen-Mengze/astrbot_plugin_minecraft_queqiao_next](https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next) 获取插件（仓库名 `astrbot_plugin_minecraft_queqiao_next`），把整个目录放入 AstrBot 的 `data/plugins/` 目录，重启 AstrBot
 2. 在 WebUI 插件配置中点击「添加 MC服务器」，填写**目标会话**（必填）
 3. 确保 `server_name` 与鹊桥 `config.yml` 的 `server_name` 完全一致
 
+> 插件目录名带 `_next`，但在 WebUI 中显示的插件名仍是「Minecraft 鹊桥互通」。
+>
 > AstrBot 与 MC 装在同一台机器时，默认连接信息已与鹊桥默认端口对齐，通常无需改动，填好「目标会话」即可使用。
 
 ### 网络与地址（Docker / 同机部署）
@@ -464,10 +466,17 @@ subscribe_event:             # 按需开启事件订阅
 
 两个前缀各配一个即可（如互通前缀 `*`、AI 前缀 `ai`），注意不要让两者相互包含。
 
+### 独立维护说明
+
+- 本仓库 `astrbot_plugin_minecraft_queqiao_next` 是上游 [XTsat/astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) 的独立维护版本，自 2026-11-06 起不再同步上游改动
+- **不要与上游版本同时安装**：两个版本都会连接鹊桥，同一台服务器会被重复连接、消息重复转发，请只保留其中一个
+- 从上游版本升级：旧插件的运行数据（账号绑定、面板偏好、互通终端日志、监控采样）会在首次启动时自动复制到新插件的数据目录，旧目录保留不删除；插件配置不会自动带过来，需要在 AstrBot 的插件配置中重新填写
+
 ### 鸣谢
 
 - [鹊桥 QueQiao](https://github.com/17TheWord/QueQiao) — 提供 Minecraft 服务端连接能力
+- [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao)（XTsat）— 本插件所基于的上游项目
 
 ### License
 
-[AGPL-3.0](LICENSE)
+本项目基于上游 [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) 修改，同样以 **AGPL-3.0** 发布：上游版权归 XTsat 所有，本仓库的修改与后续维护归 Chen-Mengze 所有。完整条款与版权声明见 [LICENSE](LICENSE)。

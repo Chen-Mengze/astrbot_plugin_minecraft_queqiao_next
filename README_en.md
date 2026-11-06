@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft Queqiao</h1>
 <p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.7.1-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.8.0-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
@@ -55,6 +55,10 @@ trigger <&param&><<>>actual command {param} {sender}
 Example: `tp <&X&> <&y&> <&z&><<>>tp {sender} <&X&> <&y&> <&z&>` — if user A has bound the game ID `Misaka` and sends `tp 114 514 1919` in the group, the server actually runs `tp Misaka 114 514 1919`.
 
 ## Configuration
+
+### Full config editor (top-right “📝 配置”)
+
+The standalone config page has been folded into the dashboard: click “📝 配置” in the top-right corner to switch the page to the full config view, where you edit every field of the plugin config template visually (MC servers, image hosting, forwarding and sessions, and so on) or switch to JSON mode for direct editing; “💾 保存并重载” (save and reload) first backs up the old config, then writes it atomically and hot-reloads it, and the monitoring panel refreshes automatically after saving. Use “📊 返回监控” (back to monitoring) to return.
 
 ### Managing servers from the panel
 
@@ -360,10 +364,12 @@ TPS and latency monitoring are **enabled by default, zero-config**: a background
 
 ### Installation
 
-1. Place this plugin under AstrBot's `data/plugins/` directory and restart AstrBot
+1. Get the plugin from [Chen-Mengze/astrbot_plugin_minecraft_queqiao_next](https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next) (repository name `astrbot_plugin_minecraft_queqiao_next`), place the whole directory under AstrBot's `data/plugins/`, then restart AstrBot
 2. In the WebUI plugin config, click "Add MC server" and **fill in "Target sessions" (required)**
 3. Make sure `server_name` exactly matches QueQiao's `server_name`
 
+> The `_next` suffix only changes the directory name: in the WebUI the plugin is still listed as “Minecraft 鹊桥互通”.
+>
 > When AstrBot and MC run on one machine, the default connection settings already line up with QueQiao's default port — nothing needs changing, just set "Target sessions".
 
 ### Networking and addresses (Docker / same-machine setups)
@@ -445,10 +451,17 @@ subscribe_event:             # enable the events you need
 
 **Q: How do I let in-game chat both reach the AI and sync to the group?** Set both prefixes, e.g. `*` for bridging and `ai` for the AI. Take care not to let one prefix contain the other.
 
+### Independently Maintained
+
+- This repository, `astrbot_plugin_minecraft_queqiao_next`, is an independently maintained version of the upstream [XTsat/astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao); it has not been synced with upstream since 2026-11-06
+- **Do not install it alongside the upstream version**: both would connect to QueQiao, so the same server would be connected twice and messages relayed twice — keep only one of them
+- Upgrading from the upstream version: the old plugin's runtime data (account bindings, panel preferences, bridge terminal logs, monitoring samples) is copied automatically into the new plugin's data directory on first start, and the old directory is kept; the plugin configuration is not carried over, so fill it in again in AstrBot's plugin config
+
 ### Credits
 
 - [QueQiao](https://github.com/17TheWord/QueQiao) — Minecraft server connectivity
+- [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) (XTsat) — the upstream project this plugin is based on
 
 ### License
 
-[AGPL-3.0](LICENSE)
+This project is a modified version of the upstream [astrbot_plugin_minecraft_queqiao](https://github.com/XTsat/astrbot_plugin_minecraft_queqiao) and is released under **AGPL-3.0** as well: copyright of the upstream project belongs to XTsat, while the modifications in this repository and its ongoing maintenance belong to Chen-Mengze. See [LICENSE](LICENSE) for the full terms and copyright notices.

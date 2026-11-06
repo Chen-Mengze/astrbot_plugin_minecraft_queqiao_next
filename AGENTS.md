@@ -1,20 +1,20 @@
-# AGENTS.md — astrbot_plugin_minecraft_queqiao（Minecraft 鹊桥互通）
+# AGENTS.md — astrbot_plugin_minecraft_queqiao_next（Minecraft 鹊桥互通）
 
 > 本文件是任何 AI 编码代理（agent）进入本项目时的**必读**工作说明书。
 > 它约定插件的架构、代码规范、文档维护规则。任何对代码、配置、行为的改动，都必须同时遵守本文档的规则。
 >
-> 项目：`astrbot_plugin_minecraft_queqiao`（Minecraft 鹊桥互通，AstrBot 插件，Python）
+> 项目：`astrbot_plugin_minecraft_queqiao_next`（Minecraft 鹊桥互通，AstrBot 插件，Python）
 >
-> **来源**：本文件基于 [XTsat/agent-templates](https://github.com/XTsat/agent-templates) 的 `templates/astrbot-plugin/AGENTS.md`，最新版见该仓库 `main` 分支；已回填本项目的插件名、命令前缀、目录结构与特有约定。
-> 用户说「更新 AGENTS」时按此流程：① 拉取来源模板最新版 → ② 与本地逐节比对 → ③ 合并（保留本项目已回填的内容）→ ④ 展示 diff 与改动清单，等用户确认后再落盘。**禁止整文件覆盖**。
+> **来源与维护方式**：本文件最初由 [XTsat/agent-templates](https://github.com/XTsat/agent-templates) 的 `templates/astrbot-plugin/AGENTS.md` 回填而成；**自 2026-11-06 起本仓库独立维护，不再与上游同步**——既不跟随模板仓库，也不跟随上游插件 `XTsat/astrbot_plugin_minecraft_queqiao`。
+> 用户说「更新 AGENTS」时按此流程：① 通读本文件、实际代码与配置，确认现状与本文件的差异 → ② 按第 7 章文档维护规则做增量修改 → ③ 展示 diff 与改动清单，等用户确认后再落盘。**禁止整文件覆盖**，**禁止拉取上游模板或上游项目文件覆盖本地**。
 >
-> 与模板的已回填差异：采用分层多文件架构（`core/` + `services/` + `handlers/`，非单文件）；日志使用二级前缀 `[{PLUGIN_NAME}][{server_name}]`；WebUI 页面在 `pages/dashboard/`（原生 JS）；另含模板未覆盖的项目专题——鹊桥协议与连接层（6.4）、指令通道超时语义（6.5）、AI 触发（6.6）、前端持久化（5.5）。
+> 与上游模板的既有差异（已在本仓库固化，不再回填模板）：采用分层多文件架构（`core/` + `services/` + `handlers/`，非单文件）；日志使用二级前缀 `[{PLUGIN_NAME}][{server_name}]`；WebUI 页面在 `pages/dashboard/`（原生 JS）；另含本仓库特有专题——鹊桥协议与连接层（6.4）、指令通道超时语义（6.5）、AI 触发（6.6）、前端持久化（5.5）。
 
 ---
 
 ## 1. 项目概览
 
-`astrbot_plugin_minecraft_queqiao` 是 AstrBot 插件（要求 AstrBot >= 4.10.4）：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao) 模组连接 Minecraft 服务器，实现群服消息互通、图片互通、服务器管理与 AI 聊天。
+`astrbot_plugin_minecraft_queqiao_next` 是 AstrBot 插件（要求 AstrBot >= 4.10.4）：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao) 模组连接 Minecraft 服务器，实现群服消息互通、图片互通、服务器管理与 AI 聊天。本仓库是上游 `XTsat/astrbot_plugin_minecraft_queqiao` 的独立维护版本，自 2026-11-06 起不再同步上游、独立发布；升级说明与许可证（AGPL-3.0）见 `README.md` 与 `LICENSE`。
 
 - 配置结构**参照** [astrbot_plugin_minecraft_adapter](https://github.com/railgun19457/astrbot_plugin_minecraft_adapter)
 - 连接方式**替换**为鹊桥 V2 协议（WebSocket + `echo` 请求响应关联）
@@ -70,7 +70,7 @@
 ### 2.1 项目结构
 
 ```
-astrbot_plugin_minecraft_queqiao/
+astrbot_plugin_minecraft_queqiao_next/
 ├── main.py                 # 插件入口：注册、命令组、生命周期、事件编排
 ├── core/                   # 核心层：配置模型 + 协议模型 + 连接管理
 │   ├── constants.py        #   常量（协议标识/默认值/重连参数）—— 零内部依赖
@@ -103,7 +103,7 @@ astrbot_plugin_minecraft_queqiao/
 
 ### 2.2 架构风格：分层多文件
 
-本项目**固定采用分层多文件风格**（模板 §2.2），依赖方向严格单向：
+本项目**固定采用分层多文件风格**（源自模板 §2.2，已在本仓库固化，不再随模板调整），依赖方向严格单向：
 
 ```
 main.py → handlers / services → core
@@ -187,7 +187,7 @@ from .core.server_manager import ServerManager
 
 DEFAULT_TIMEOUT = 30
 
-@register(PLUGIN_NAME, "XTsat", "插件描述", "vX.Y.Z", "https://github.com/XTsat/astrbot_plugin_minecraft_queqiao")
+@register(PLUGIN_NAME, "Chen-Mengze", "插件描述", "vX.Y.Z", "https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next")
 class MinecraftQueQiaoPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
@@ -234,7 +234,7 @@ class MinecraftQueQiaoPlugin(Star):
 
 ### 4.5 日志
 
-- 统一 `logger.info/warning/error`，**必须带二级前缀** `[{PLUGIN_NAME}][{server_name}]`，如 `[astrbot_plugin_minecraft_queqiao][生存服] 连接成功`
+- 统一 `logger.info/warning/error`，**必须带二级前缀** `[{PLUGIN_NAME}][{server_name}]`，如 `[astrbot_plugin_minecraft_queqiao_next][生存服] 连接成功`
 - 错误信息带 emoji 前缀（如 `❌`、`⚠️`）
 - 精确捕获异常类型（`asyncio.TimeoutError`、`OSError`），禁止空 `except: pass`（除非注释说明理由）
 - 异常分类记录：ValueError = 非法参数，OSError = 文件/IO 错误，各自记录，单条失败不影响其它服务器/规则
@@ -284,7 +284,7 @@ class MinecraftQueQiaoPlugin(Star):
 > `cannot import name 'Context' from 'astrbot.api'` 插件加载失败。
 >
 > `tests_offline.py` 的桩**必须忠实反映真实 API**（尤其 `astrbot.api` 不得提供
-> `Context`），否则桩会掩盖此类错误——第 16 组断言专门守卫这一点。
+> `Context`），否则桩会掩盖此类错误——有一组断言专门守卫这一点。
 >
 > 另注：`LLMResponse.completion_text` 已被官方标记「过时，推荐 `result_chain`」，
 > 目前仍可用；若未来移除需改 `_ask_llm()`。
@@ -321,7 +321,9 @@ class MinecraftQueQiaoPlugin(Star):
 
 ### 5.4 运行时数据与持久化
 
-数据目录：`StarTools.get_data_dir("astrbot_plugin_minecraft_queqiao")`
+数据目录：`StarTools.get_data_dir(PLUGIN_DATA_DIR)`（`PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao_next"`）
+
+> **旧版数据迁移**：首次启动时，若新数据目录不存在或为空、且旧插件数据目录 `astrbot_plugin_minecraft_queqiao` 存在，`main._migrate_legacy_data_dir()` 会把旧目录数据复制到新目录；**只复制不删除**，旧目录保留，便于回滚与核对。配置项存放在 AstrBot 插件配置而非数据目录，不随迁移，升级后需重新填写；迁移失败仅告警，不阻断启动。
 
 | 路径 | 内容 |
 |---|---|
@@ -639,7 +641,7 @@ README 的读者是**插件使用者**（服务器管理员、群成员），不
 命名规则：
 
 - **中文版 h1**：取 `metadata.yaml` 的 `display_name`（Minecraft 鹊桥互通）
-- **英文版 h1**：取插件名 `astrbot_plugin_xxx` 的 `xxx` 拆分后首字母大写；本项目沿用现有标题 `Minecraft Queqiao`（Queqiao 视为专名，不再拆分）
+- **英文版 h1**：取插件名 `astrbot_plugin_xxx` 的 `xxx` 拆分后首字母大写（`_next` 是仓库/插件标识后缀，不参与标题拆分）；本项目沿用现有标题 `Minecraft Queqiao`（Queqiao 视为专名，不再拆分）
 - **desc**：中文版用 `metadata.yaml` 的 `desc`；英文版做地道翻译
 - **标签（tags）**：取自 `metadata.yaml` 的 `tags`（中文标签用 `&nbsp;&nbsp;` 分隔；英文版用英文标签）
 - **版本徽章**：本项目在 desc 与 tags 之间保留 version badge，发版时同步更新
@@ -735,7 +737,7 @@ README 正文严格按以下 4 大板块组织，但不强制使用 `##` 标题�
 
 ### 8.3 测试与验证
 
-- 改动纯逻辑后运行 `python3 tests_offline.py`（55 组断言，覆盖配置解析、事件模型、转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、图床与内置图片 HTTP、SLP ping 与监控采样、面板偏好与终端日志、本地翻译、回复游戏消息反解玩家名）
+- 改动纯逻辑后运行 `python3 tests_offline.py`（离线断言覆盖配置解析、事件模型、转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、图床与内置图片 HTTP、SLP ping 与监控采样、面板偏好与终端日志、本地翻译、回复游戏消息反解玩家名、插件更名后的旧数据目录迁移）
 - 语法自检：`python3 -m py_compile main.py core/*.py services/*.py handlers/*.py` 无语法错误（本项目是包结构，`import main` 相对导入不可用）
 - 格式检查：`python -m ruff format .`（如果项目历史有 ruff 提交）
 - 命令有新增/删除时：同步更新 `README.md` 命令表与本文件 6.2 节
