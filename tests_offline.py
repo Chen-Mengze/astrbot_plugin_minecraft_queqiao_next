@@ -2830,8 +2830,13 @@ try:
         memory_percentage=87.5,
     ).to_dict()
     _cmem34d = _cpm34(_smem34d)
-    assert _cmem34d["memory_total"] == 0, _cmem34d
-    assert _cmem34d["memory_usage_text"] == "未知", _cmem34d
+    # Windows 上读不到 meminfo 时按设计保留鹊桥原值（其口径无页缓存虚高），
+    # 其余平台无法判定部署形态 → 清零隐藏；两种语义分别断言
+    if os.name == "nt":
+        assert _cmem34d["memory_total"] == 8 * 1024 ** 3, _cmem34d
+    else:
+        assert _cmem34d["memory_total"] == 0, _cmem34d
+        assert _cmem34d["memory_usage_text"] == "未知", _cmem34d
 finally:
     _hm34.read_host_meminfo = _orig_read34
 
@@ -3238,17 +3243,22 @@ import asyncio as _asyncio35
 import shutil as _shutil35
 import time as _time35
 from datetime import date as _date35, timedelta as _td35, datetime as _dt35
+from astrbot_plugin_minecraft_queqiao.core.models import ServerStatus as _SStat35
 from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _SC35
 from astrbot_plugin_minecraft_queqiao.services.monitor import (
     MonitorCollector as _MC35,
     MonitorSample as _MS35,
     MonitorSettings as _MSettings35,
     MonitorStore as _MStore35,
+    brand_from_tps_command as _brand_cmd35,
     parse_tps as _parse_tps35,
+    resolve_tps_command as _resolve_tps35,
     safe_server_name as _safe_name35,
+    tps_command_candidates as _tps_cands35,
 )
 from astrbot_plugin_minecraft_queqiao.services.slp_ping import (
     brand_from_slp as _brand35,
+    brand_from_text as _brand_text35,
     mc_ping as _mc_ping35,
 )
 
@@ -3265,6 +3275,20 @@ assert _parse_tps35("") is None
 assert _parse_tps35(None) is None
 # 裸三数但无 TPS 语境 → 不误判（如 RCON 返回的纯数字行）
 assert _parse_tps35("20.0, 20.0, 20.0") is None
+# Forge/NeoForge：每维度一行 "Mean tick time: ... Mean TPS: ..."，末行 Overall。
+# 取 Overall 的单值（Forge 没有 1m/5m/15m 三档窗口），tps5/tps15 为 None
+_FORGE_OUT35 = (
+    "[22:22:27] [Server thread/INFO] [minecraft/MinecraftServer]: "
+    "Dim minecraft:overworld (minecraft:overworld): Mean tick time: 2.793 ms. Mean TPS: 20.000\n"
+    "[22:22:27] [Server thread/INFO] [minecraft/MinecraftServer]: "
+    "Dim deeperdarker:otherside (deeperdarker:otherside): Mean tick time: 0.140 ms. Mean TPS: 19.500\n"
+    "Overall: Mean tick time: 4.424 ms. Mean TPS: 18.750"
+)
+assert _parse_tps35(_FORGE_OUT35) == (18.75, None, None), "必须优先取 Overall 汇总行"
+assert _parse_tps35(_FORGE_OUT35)[0] != 20.0, "维度行数值不应盖过 Overall"
+assert _parse_tps35(
+    "Dim x (y): Mean tick time: 2.7 ms. Mean TPS: 19.5") == (19.5, None, None)
+assert _parse_tps35("§aOverall: Mean tick time: 4.4 ms. Mean TPS: 20.0") == (20.0, None, None)
 
 # (b) ServerConfig 监控配置：默认值 / 显式配置 / 非法值兜底
 _sc35_default = _SC35.from_dict({})
@@ -3309,16 +3333,26 @@ assert _MSettings35.from_dict({"auto_refresh_interval": 30}).auto_refresh_interv
 assert _MSettings35.from_dict({"auto_refresh_interval": 1}).auto_refresh_interval == 10
 assert _MSettings35.from_dict({"auto_refresh_interval": 99999}).auto_refresh_interval == 3600
 assert _MSettings35.from_dict({}).auto_refresh_interval == 10
-# auto 指令解析：按 get_status 识别到的服务端类型自动选指令
-from astrbot_plugin_minecraft_queqiao.services.monitor import (  # noqa: E402
-    resolve_tps_command as _resolve_tps35,
-)
+# auto 指令解析：按服务端品牌生成候选指令（首个优先执行，失败依次回退）
 assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps"
 assert _resolve_tps35("Paper 1.20.4", "") == "tps"
 assert _resolve_tps35("Fabric 0.14.21", "auto") == "spark tps", "Fabric 无内置 tps，用 spark"
 assert _resolve_tps35("spigot 1.16.5", "auto") == "tps"
 assert _resolve_tps35(None, "auto") == "tps", "未知/无缓存一律默认尝试 tps"
 assert _resolve_tps35("forge 1.20.1", "spark tps") == "spark tps", "显式指令优先于自动"
+# NeoForge 必须先试 neoforge tps（识别成 forge 会执行错误指令）
+assert _tps_cands35("NeoForge 21.1.0", "auto")[:2] == ["neoforge tps", "forge tps"]
+# 品牌指令后追加通用兜底（去重）：品牌识别错误时仍有机会采到 TPS
+assert _tps_cands35("forge 1.20.1", "auto") == ["forge tps", "tps", "spark tps"]
+assert _tps_cands35("Fabric 1.20.1", "auto") == ["spark tps", "tps", "forge tps"]
+assert _tps_cands35(None, "auto") == ["tps", "forge tps", "spark tps"]
+assert _tps_cands35("purpur 1.20.4", "auto")[0] == "tps"
+# 显式填写具体指令时不做自动回退，保证行为可预期
+assert _tps_cands35("forge 1.20.1", "tps") == ["tps"]
+# 从实测成功的指令反推品牌：仅 forge/neoforge 可唯一确定
+assert _brand_cmd35("forge tps") == "forge"
+assert _brand_cmd35("neoforge tps") == "neoforge"
+assert _brand_cmd35("spark tps") is None and _brand_cmd35("tps") is None
 
 # (b2) SLP 直连 ping 端到端：本地起一个伪造 MC 状态服务端，真实走协议
 def _mc_varint_enc35(value):
@@ -3386,6 +3420,11 @@ async def _slp_e2e35():
     assert ping.player_names == ["Steve", "Alex", "Notch"], \
         "SLP sample 名字应解析且剥离 § 格式码、兼容文本组件"
     assert _brand35(ping.version_name, ping.description) == "forge"
+    # 词边界匹配：NeoForge 不能被 forge 吞掉、MOTD 广告里的子串不算品牌名
+    assert _brand_text35("NeoForge 21.1.0") == "neoforge"
+    assert _brand_text35("Forge 1.20.1") == "forge"
+    assert _brand_text35("newspaper") is None and _brand_text35("") is None
+    assert _brand35("", "Welcome to my Paper server") == "paper", "版本名缺失才看 MOTD"
     # 非 MC 端口（无监听）：返回 None 而非抛异常
     assert await _mc_ping35("127.0.0.1", 1, timeout=1.0) is None
     # 伪 HTTP 服务（如鹊桥 Web 端口）：响应即使能读也必须判失败，
@@ -3490,15 +3529,21 @@ assert not (_srv_dir35 / f"{_old35}.jsonl").exists(), "超保留期的分片被�
 
 # (d) MonitorCollector：一轮采样（TPS 与延迟并行）、未连接跳过、错误状态
 class _FakeInst35:
-    def __init__(self, connected=True, rcon_out=None):
+    def __init__(self, connected=True, rcon_out=None, outputs=None, status_model=None):
         self._connected = connected
         self._rcon_out = rcon_out
+        self._outputs = outputs or {}
+        self._status_model = status_model
         self.commands = []
     @property
     def connected(self):
         return self._connected
+    async def get_status_model(self):
+        return self._status_model
     async def execute_command_with_channel(self, command):
         self.commands.append(command)
+        if command in self._outputs:
+            return self._outputs[command], "queqiao"
         return self._rcon_out, "queqiao"
 
 
@@ -3548,18 +3593,30 @@ _sm35.add("SrvSlow", _FakeInst35(
     connected=True, rcon_out="TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0"))
 _sm35.add("SrvDown", _FakeInst35(connected=False, rcon_out="x"))
 _cfg35_on = _SC35.from_dict({"server": {"server_name": "Srv"}})  # 监控默认开启
-# auto 指令自动切换：SLP 识别到 forge → 首轮用默认 tps，识别后自动换 forge tps。
-# 该服以 enabled=False 启动（后台任务空转），采样轮次完全由测试手动控制，
-# 避免后台任务抢先缓存品牌导致时序不确定。
+# auto 候选回退：首轮品牌未知 → 先试 tps（Unknown command），再试 forge tps
+# 成功 → 记录品牌与可用指令；后续轮次直接复用。以 enabled=False 启动
+# （后台任务空转），采样轮次完全由测试手动控制，避免时序不确定。
+_FORGE_LINE35 = "Overall: Mean tick time: 4.424 ms. Mean TPS: 20.000"
 _sm35.add("SrvForge", _FakeInst35(
-    connected=True, rcon_out="TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0"))
+    connected=True, rcon_out=_FORGE_LINE35,
+    outputs={"tps": 'Unknown command. Type "/help" for help.'}))
+# get_status 自报 forge 核心类型：不依赖延迟探测域名，首轮即选对指令
+_sm35.add("SrvStatus", _FakeInst35(
+    connected=True, rcon_out=_FORGE_LINE35,
+    status_model=_SStat35.from_dict(
+        {"server_type": "forge", "server_version": "1.20.1"})))
+# 通道失败（output=None）：不得换指令重发（超时 ≠ 失败，避免重复执行）
+_sm35.add("SrvNull", _FakeInst35(connected=True, rcon_out=None))
 _cfg35_forge = _SC35.from_dict({"monitor": {"enabled": False}})
 # 全部放入同一事件循环：start/采样/动态设置/持久化恢复/stop 共享生命周期
 async def _d35():
     # start：初始化设置（默认开启）并为每台服务器启动常驻任务
-    _col35.start({"Srv": _cfg35_on, "SrvBad": _cfg35_on, "SrvOld": _cfg35_on,
-                  "SrvSlow": _cfg35_on, "SrvDown": _cfg35_on,
-                  "SrvForge": _cfg35_forge})
+    # 除 Srv 外全部以 enabled=False 启动：采样轮次完全由 _smp 手动控制，
+    # 避免后台 _loop 并发采样把断言用的错误/指令记录搅成竞态
+    _col35.start({"Srv": _cfg35_on, "SrvBad": _cfg35_forge, "SrvOld": _cfg35_forge,
+                  "SrvSlow": _cfg35_forge, "SrvDown": _cfg35_forge,
+                  "SrvForge": _cfg35_forge, "SrvStatus": _cfg35_forge,
+                  "SrvNull": _cfg35_forge})
     # 延迟探测地址必须显式配置（留空不探测，避免测出内网假低延迟）；
     # 模拟用户填了公网域名（品牌识别/延迟都依赖 SLP ping）
     _col35.apply_settings("Srv", {"ping_host": "mc.example.com"})
@@ -3604,6 +3661,13 @@ async def _d35():
     await _smp("SrvBad")
     assert _col35.store.latest("SrvBad").tps1 is None
     assert "无法解析" in _col35.status("SrvBad")["last_error"]
+    assert _sm35.get("SrvBad").commands == ["tps", "forge tps", "spark tps"], \
+        "品牌未知时按候选顺序全部尝试，错误信息里要能看出试过哪些指令"
+    assert "已尝试" in _col35.status("SrvBad")["last_error"]
+    # 全部候选失败后进入冷却：下一轮不再连发无效指令
+    await _smp("SrvBad")
+    assert _sm35.get("SrvBad").commands == ["tps", "forge tps", "spark tps"], \
+        "冷却期内不应重复尝试候选指令"
     # 直连 SLP ping 失败（连接拒绝/非 MC 端口）：latency=None + 错误，TPS 正常
     _col35._ping = _fake_ping_none35
     await _smp("SrvOld")
@@ -3621,22 +3685,39 @@ async def _d35():
     await _smp("SrvDown")
     assert _col35.store.latest("SrvDown") is None, "未连接不应产生样本"
     assert "未连接" in _col35.status("SrvDown")["last_error"]
-    # auto 指令自动切换：首轮（尚无品牌缓存）用默认 tps；SLP 识别出 forge 后，
-    # 下一轮自动换 forge tps；显式指令优先于自动
+    # auto 候选回退：首轮品牌未知 → tps 失败后 forge tps 成功，品牌从实测指令
+    # 反推为 forge；后续轮次直接复用缓存的 forge tps
     _col35._ping = _fake_ping_forge35
     await _smp("SrvForge")
-    assert _col35._server_types.get("SrvForge") == "forge", "SLP 应缓存服务端品牌"
-    assert _sm35.get("SrvForge").commands[-1] == "tps", "首轮无缓存时用默认 tps"
+    assert _sm35.get("SrvForge").commands == ["tps", "forge tps"], \
+        "品牌未知时应依次尝试候选指令直到解析成功"
+    assert _col35._server_types.get("SrvForge") == "forge", "实测成功的指令可反推品牌"
+    assert _col35.store.latest("SrvForge").tps1 == 20.0
+    assert _col35.store.latest("SrvForge").tps5 is None, "Forge 单值没有 5m 档"
     await _smp("SrvForge")
-    assert _sm35.get("SrvForge").commands[-1] == "forge tps", "识别 forge 后自动切换指令"
+    assert _sm35.get("SrvForge").commands[-1] == "forge tps", "后续轮次复用已缓存指令"
     assert _col35.status("SrvForge")["tps_command_resolved"] == "forge tps"
     assert _col35.status("SrvForge")["server_type"] == "forge"
+    # 显式指令优先于自动选择，且不走候选回退
     _col35.apply_settings("SrvForge", {"tps_command": "spark tps"})
     await _smp("SrvForge")
     assert _sm35.get("SrvForge").commands[-1] == "spark tps", "显式指令覆盖自动选择"
     _col35.apply_settings("SrvForge", {"tps_command": "spark tps"})
     await _smp("SrvForge")
     assert _sm35.get("SrvForge").commands[-1] == "spark tps", "显式指令覆盖自动选择"
+    # get_status 自报品牌：不依赖延迟探测域名，首轮即执行 forge tps
+    _col35._ping = None
+    await _smp("SrvStatus")
+    assert _sm35.get("SrvStatus").commands == ["forge tps"], \
+        "get_status 识别到 forge 后首轮即用 forge tps"
+    assert _col35.status("SrvStatus")["server_type"] == "forge"
+    assert _col35.store.latest("SrvStatus").tps1 == 20.0
+    # 通道失败（output=None）：只尝试首个候选，不换指令重发
+    await _smp("SrvNull")
+    assert _sm35.get("SrvNull").commands == ["tps"], \
+        "通道失败不得换指令重发，避免同一条指令在服务器上执行两遍"
+    assert _col35.store.latest("SrvNull").tps1 is None
+    assert "TPS 不可用" in _col35.status("SrvNull")["last_error"]
 
     # 动态设置（仪表盘入口，不走 conf schema）：apply_settings 即时生效 + 持久化
     _upd35 = _col35.apply_settings("Srv", {"enabled": False, "interval": 120, "retention_days": 3})
@@ -3659,6 +3740,14 @@ async def _d35():
     await _col35.stop()
     await _col35b.stop()
 _asyncio35.run(_d35())
+
+# 渲染：Forge 单值 TPS 不标 1m/5m/15m（只有三档齐全才标）
+from astrbot_plugin_minecraft_queqiao.services.renderer import InfoRenderer as _IR35
+_ss35 = _SStat35.from_dict({"server_type": "forge", "server_version": "1.20.1"})
+_txt35_single = _IR35.format_status("SrvForge", _ss35, tps=(20.0, None, None))
+assert "TPS：20.0" in _txt35_single and "1m/5m/15m" not in _txt35_single, _txt35_single
+_txt35_full = _IR35.format_status("Srv", _ss35, tps=(20.0, 19.5, 19.0))
+assert "TPS：20.0 / 19.5 / 19.0（1m/5m/15m）" in _txt35_full, _txt35_full
 
 # (e) WebApiController：监控路由注册与响应
 class _MockCtx35:

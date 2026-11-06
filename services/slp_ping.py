@@ -219,20 +219,34 @@ async def mc_ping(
     )
 
 
-def brand_from_slp(version_name: str, description: str = "") -> str | None:
-    """从状态响应的版本名 / MOTD 中识别服务端品牌，供 TPS 指令 auto 选择。
+# 品牌关键字：词边界匹配，避免子串误命中（"newspaper" 不算 paper、
+# "Forge-like" 不算 forge），并让 neoforge 优先于 forge 匹配——
+# NeoForge 的 TPS 指令是 neoforge tps，识别成 forge 会执行错误指令
+_BRAND_RE = re.compile(
+    r"(?<![a-z0-9])(neoforge|pufferfish|purpur|paper|folia|spigot|bukkit|"
+    r"sponge|leaves|fabric|quilt|forge)(?![a-z0-9])",
+    re.IGNORECASE,
+)
 
-    返回小写品牌关键字（forge / fabric / quilt / paper / spigot / bukkit /
-    purpur / pufferfish / leaves / sponge / folia）；识别不到返回 None。
+
+def brand_from_text(text: str) -> str | None:
+    """从任意文本（版本名 / MOTD / get_status 的服务端类型）识别品牌。
+
+    返回小写品牌关键字（neoforge / forge / fabric / quilt / paper / spigot /
+    bukkit / purpur / pufferfish / leaves / sponge / folia）；识别不到返回 None。
     """
-    text = f"{version_name} {description}".lower()
-    for brand in (
-        "pufferfish", "purpur", "paper", "spigot", "bukkit", "folia",
-        "sponge", "leaves", "fabric", "quilt", "forge",
-    ):
-        if brand in text:
-            return brand
-    return None
+    cleaned = _strip_format_codes(text or "")
+    match = _BRAND_RE.search(cleaned)
+    return match.group(1).lower() if match else None
+
+
+def brand_from_slp(version_name: str, description: str = "") -> str | None:
+    """从 SLP 状态响应的版本名 / MOTD 中识别服务端品牌，供 TPS 指令 auto 选择。
+
+    版本名由服务端自报，最可靠，优先匹配；识别不到再看 MOTD（服务器管理员
+    常写成广告/介绍文本，最容易混入其它品牌名）。返回小写品牌关键字。
+    """
+    return brand_from_text(version_name) or brand_from_text(description)
 
 
 def parse_host_port(
