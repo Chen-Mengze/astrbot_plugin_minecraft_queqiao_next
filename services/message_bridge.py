@@ -12,16 +12,14 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from astrbot.api import logger
 
 from ..core.constants import (
-    API_SET_MSG_EMOJI_LIKE,
     DEFAULT_CHATIMAGE_NAME,
     ECHO_SUPPRESS_WINDOW,
-    EMOJI_OK_GESTURE,
     IMAGE_DOWNLOAD_TIMEOUT,
     MARK_TEXT_OK,
     MAX_IMAGE_DOWNLOAD_BYTES,
@@ -35,9 +33,6 @@ from ..core.constants import (
 )
 from ..core.models import QueQiaoEvent
 from ..core.models_config import ServerConfig
-
-if TYPE_CHECKING:
-    from astrbot.api.event import AstrMessageEvent
 
 # MC 传统格式化代码（§a 等）与文本组件都可能混在消息里
 _FORMAT_CODE_RE = re.compile(r"§[0-9a-fk-orA-FK-OR]")
@@ -287,6 +282,21 @@ async def download_image_bytes(
     return data
 
 
+def _session_key(umo: str) -> str:
+    """把 UMO 归一化为「适配器:消息类型:群号」。
+
+    群聊 UMO 的会话 ID 可能是「执行 /sid 的用户QQ_群号」（同一群每个成员
+    都不同），群号才是会话本身；匹配前丢弃发送者前缀，否则只有配置时
+    那个成员的消息能转发。非该结构（私聊、无冒号）原样返回。
+    """
+    text = str(umo or "").strip()
+    parts = text.rsplit(":", 2)
+    if len(parts) != 3:
+        return text
+    platform, message_type, session_id = parts
+    return f"{platform}:{message_type}:{session_id.rsplit('_', 1)[-1]}"
+
+
 class MessageBridge:
     """负责 MC 事件到外部会话的格式化与发送。"""
 
@@ -295,7 +305,8 @@ class MessageBridge:
         # 本地翻译器（插件侧把鹊桥英文/翻译键转中文），None 表示未启用
         self._translator = translator
         self._configs: dict[str, ServerConfig] = {}
-        # 会话 UMO -> [(server_name, config)]，用于外部消息反查目标服务器
+        # 归一化会话键（适配器:消息类型:群号）-> [(server_name, config)]，
+        # 用于外部消息反查目标服务器
         self._session_to_servers: dict[str, list[tuple[str, ServerConfig]]] = {}
         # (server_name, content) -> 转发时间，用于回声抑制
         self._recently_forwarded: dict[tuple[str, str], float] = {}
@@ -304,7 +315,7 @@ class MessageBridge:
         """注册服务器并建立目标会话的反向索引。"""
         self._configs[config.server_name] = config
         for umo in config.target_sessions:
-            entries = self._session_to_servers.setdefault(umo, [])
+            entries = self._session_to_servers.setdefault(_session_key(umo), [])
             if all(sid != config.server_name for sid, _ in entries):
                 entries.append((config.server_name, config))
 
@@ -315,8 +326,8 @@ class MessageBridge:
         self._recently_forwarded.clear()
 
     def servers_for_session(self, umo: str) -> list[tuple[str, ServerConfig]]:
-        """查询某会话绑定的服务器列表。"""
-        return list(self._session_to_servers.get(umo, []))
+        """查询某会话绑定的服务器列表（按「适配器:消息类型:群号」匹配）。"""
+        return list(self._session_to_servers.get(_session_key(umo), []))
 
     # ---- 回声抑制 ----
 
@@ -540,62 +551,14 @@ class MessageBridge:
     async def mark_relayed(self, event: Any, config: ServerConfig) -> None:
         """转发成功后按 `mark_option` 给出回执。
 
-        - `emoji`：给原消息贴表情（走协议端私有接口，仅 aiocqhttp 支持）
         - `text`：回复一条 ✅ 文本
         - `none`：不提醒
 
         回执属于「锦上添花」，任何失败都只记 debug 日志，绝不影响转发结果。
         """
-        option = config.mark_option
-        if option == "none":
-            return
-        if option == "emoji":
-            # 只贴表情，不额外发文本；平台不支持时不回退成文本，避免刷屏
-            await self._react_with_emoji(event, emoji_id=config.mark_emoji_id)
+        if config.mark_option == "none":
             return
         await self._mark_text(event)
-
-    async def _react_with_emoji(
-        self, event: "AstrMessageEvent", emoji_id: int = EMOJI_OK_GESTURE
-    ) -> bool:
-        """给原消息贴表情（OneBot 扩展 `set_msg_emoji_like`，所有 aiocqhttp
-        协议端均支持，如 NapCat / Lagrange / LLOneBot）。
-
-        emoji_id: 要使用的表情符号 ID (默认: EMOJI_OK_GESTURE)
-            - EMOJI_OK_GESTURE (124): 👌
-            - EMOJI_THUMBS_UP (76): 👍
-            - EMOJI_LOVE (66): ❤️
-            - EMOJI_ROSE (63): 🌹
-
-        非 aiocqhttp 平台、或拿不到 message_id 时静默跳过。
-
-        注意：aiocqhttp 的 `CQHttp.__getattr__` 会为**任意**名字返回
-        `call_action` 的偏函数，所以不能用 `getattr(bot, "set_msg_emoji_like")`
-        判断接口是否存在——那样永远为真。这里直接走 `call_action`，
-        由协议端在真正不支持时返回错误，再降级为静默跳过。
-        """
-        message_id = getattr(getattr(event, "message_obj", None), "message_id", None)
-        if not message_id:
-            return False
-
-        bot = getattr(event, "bot", None)
-        emoji_id = emoji_id or EMOJI_OK_GESTURE
-        try:
-            if hasattr(bot, "call_action"):
-                await bot.call_action(
-                    API_SET_MSG_EMOJI_LIKE,
-                    message_id=message_id,
-                    emoji_id=str(emoji_id),
-                )
-                return True
-            if bot is not None:
-                await bot.set_msg_emoji_like(
-                    message_id=message_id, emoji_id=str(emoji_id)
-                )
-                return True
-        except Exception as exc:
-            logger.debug(f"[{PLUGIN_NAME}] 贴表情失败({message_id}): {exc}")
-        return False
 
     async def _mark_text(self, event: Any) -> bool:
         """回复一条 ✅ 文本作为转发回执。"""

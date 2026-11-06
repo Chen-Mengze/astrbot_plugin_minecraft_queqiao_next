@@ -1231,7 +1231,7 @@ class MinecraftQueQiaoPlugin(Star):
                     f"[{PLUGIN_NAME}][{server_name}] 已转发 {len(image_codes)} "
                     f"张图片到游戏内{extra}"
                 )
-            # 转发成功后给原消息回执（emoji 贴表情 / text 文本回复）
+            # 转发成功后按 mark_option 给出回执（text 文本回复 / none 不提醒）
             await self.message_bridge.mark_relayed(event, config)
 
         return relayed

@@ -134,24 +134,12 @@
 | `broadcast_format` | string | `[{platform}]{sender}: {message}` | 转发到游戏内的格式，支持 `{platform}` `{sender}` `{message}` `{display_name}` `{server_name}` |
 | `platform_names` | list | `["aiocqhttp=QQ"]` | 平台名称映射：`原始平台名=显示名`，如 `aiocqhttp=QQ` |
 | `broadcast_color` | string | `white` | 转发消息颜色，支持 MC 颜色名或 `#RRGGBB` |
-| `mark_option` | string | `emoji` | 转发成功提醒：`text` 回复 ✅ / `emoji` 贴表情 / `none` 不提醒 |
-| `mark_emoji_id` | int | `124` | 回执表情 ID（QQ 表情 ID，默认 `124` = 👌） |
+| `mark_option` | string | `none` | 转发成功提醒：`text` 回复 ✅ / `none` 不提醒 |
 | `forward_image_to_mc` | bool | `false` | 群消息图片转发进游戏（需玩家安装 ChatImage 模组才渲染，否则显示 CICode 文本） |
 | `chatimage_name` | string | `图片` | 图片在游戏聊天栏的显示名称 |
 | `forward_image_from_mc` | bool | `false` | 游戏内图片（CICode / 链接）自动下载后作为图片发回群 |
 
-> 目标会话可用 AstrBot 自带的 `/sid` 指令获取：在目标群聊/私聊发送 `/sid`，回复中的 `UMO` 就是要填的值（如 `aiocqhttp:GroupMessage:123456789`）。该列表同时决定：MC 消息转发到哪些会话、哪些会话的消息转发进 MC、以及该会话的 `mc` 指令归属哪台服务器。
-
-> `mark_option: emoji` 会给触发转发的**原消息贴表情**（不额外发消息），所有 aiocqhttp 协议端（NapCat、Lagrange、LLOneBot 等）都支持，其他平台静默跳过。
-
-`mark_emoji_id` 常用 QQ 表情 ID：
-
-| 常量 | ID | 表情 |
-|------|----|------|
-| `EMOJI_OK_GESTURE` | `124` | 👌 |
-| `EMOJI_THUMBS_UP` | `76` | 👍 |
-| `EMOJI_LOVE` | `66` | ❤️ |
-| `EMOJI_ROSE` | `63` | 🌹 |
+> 目标会话可用 AstrBot 自带的 `/sid` 指令获取：在目标群聊/私聊发送 `/sid`，回复中的 `UMO` 就是要填的值（如 `aiocqhttp:GroupMessage:123456789`）。群聊 UMO 也可能形如 `aiocqhttp:GroupMessage:123456789_987654321`（前半段是执行 `/sid` 的成员 QQ 号），插件按「适配器 + 消息类型 + 群号」匹配，同群其他成员的消息也能转发。该列表同时决定：MC 消息转发到哪些会话、哪些会话的消息转发进 MC、以及该会话的 `mc` 指令归属哪台服务器。
 
 </details>
 

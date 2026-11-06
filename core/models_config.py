@@ -36,7 +36,6 @@ from .constants import (
     DEFAULT_REVERSE_PATH,
     DEFAULT_TERMINAL_DAYS,
     DEFAULT_WS_URL,
-    EMOJI_OK_GESTURE,
     MONITOR_MIN_INTERVAL,
     QUIET_HOURS_ITEM_KEYS,
     QUIET_HOURS_TIME_PATTERN,
@@ -46,7 +45,7 @@ WS_MODE_FORWARD = "forward"
 WS_MODE_REVERSE = "reverse"
 
 VALID_WS_MODES = (WS_MODE_FORWARD, WS_MODE_REVERSE)
-VALID_MARK_OPTIONS = ("text", "emoji", "none")
+VALID_MARK_OPTIONS = ("text", "none")
 VALID_LIST_MODES = ("white", "black", "none")
 
 
@@ -254,8 +253,8 @@ class ServerConfig:
         default_factory=lambda: dict(DEFAULT_PLATFORM_NAMES)
     )
     broadcast_color: str = "white"
-    mark_option: str = "emoji"
-    mark_emoji_id: int = EMOJI_OK_GESTURE
+    # 转发提醒方式：text（文本回执）/ none（不提醒）
+    mark_option: str = "none"
     # 外部会话消息中的图片转发到游戏内（依赖游戏端 ChatImage 模组渲染）
     forward_image_to_mc: bool = False
     # ChatImage 代码中 name 参数的取值（图片在聊天栏的显示名）
@@ -474,13 +473,10 @@ class ServerConfig:
         if ws_mode not in VALID_WS_MODES:
             ws_mode = WS_MODE_FORWARD
 
-        mark_option = _to_str(message.get("mark_option"), "emoji").strip().lower()
+        mark_option = _to_str(message.get("mark_option"), "none").strip().lower()
         if mark_option not in VALID_MARK_OPTIONS:
-            mark_option = "emoji"
-
-        # 自定义回执表情 ID（默认 👌 = EMOJI_OK_GESTURE）；
-        # 留空或非法时回落默认值，避免把非表情 ID 发给协议端
-        mark_emoji_id = _to_int(message.get("mark_emoji_id"), EMOJI_OK_GESTURE)
+            # 已移除的 emoji 回执与其它非法值统一按不提醒处理
+            mark_option = "none"
 
         list_mode = _to_str(cmd.get("cmd_white_black_list"), "white").strip().lower()
         if list_mode not in VALID_LIST_MODES:
@@ -601,7 +597,6 @@ class ServerConfig:
             ),
             broadcast_color=_to_str(message.get("broadcast_color"), "white") or "white",
             mark_option=mark_option,
-            mark_emoji_id=mark_emoji_id,
             forward_image_to_mc=_to_bool(message.get("forward_image_to_mc"), False),
             chatimage_name=_to_str(
                 message.get("chatimage_name"), DEFAULT_CHATIMAGE_NAME

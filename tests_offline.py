@@ -144,6 +144,13 @@ cfg = ServerConfig.from_dict({"server":{"server_name":"S"},
                "forward_chat_to_astrbot":True,"forward_join_leave_to_astrbot":False}})
 br.register_server(cfg)
 assert br.servers_for_session("umo:GroupMessage:1")[0][0] == "S"
+# 群聊 UMO 的会话 ID 可能是「执行 /sid 的用户QQ_群号」（同一群每个成员都不同），
+# 匹配只看「适配器:消息类型:群号」，发送者 QQ 段直接丢弃
+assert br.servers_for_session("umo:GroupMessage:3260203441_1")[0][0] == "S"
+assert br.servers_for_session("umo:GroupMessage:999_1")[0][0] == "S"
+assert br.servers_for_session("umo:PrivateMessage:1") == [], "消息类型不同不应命中"
+assert br.servers_for_session("other:GroupMessage:1") == [], "适配器不同不应命中"
+assert br.servers_for_session("umo:GroupMessage:2") == [], "群号不同不应命中"
 assert br.should_relay(cfg,"*hello") is True
 assert br.should_relay(cfg,"no prefix") is False
 assert br.strip_relay_prefix(cfg,"*hello") == "hello"
@@ -408,92 +415,37 @@ import astrbot_plugin_minecraft_queqiao.services.message_bridge as _mb_mod
 from astrbot_plugin_minecraft_queqiao.core.models_config import ServerConfig as _S2
 _MB = _mb_mod.MessageBridge
 
-class _Bot:
-    """模拟 aiocqhttp 客户端：真实入口是 call_action(action, **params)。"""
-    def __init__(self, supports=True, fail=False):
-        self.calls = []
-        self._supports = supports
-        self._fail = fail
-    async def call_action(self, action, **params):
-        if not self._supports or action != "set_msg_emoji_like":
-            raise RuntimeError(f"unsupported action: {action}")
-        if self._fail:
-            raise RuntimeError("boom")
-        self.calls.append((params.get("message_id"), params.get("emoji_id")))
-
-class _MsgObj:
-    def __init__(self, mid): self.message_id = mid
-
-class _Ev:
-    def __init__(self, bot, mid="12345"):
-        self.bot = bot
-        self.message_obj = _MsgObj(mid)
+class _Ev18:
+    def __init__(self):
         self.sent = []
     async def send(self, chain): self.sent.append(chain)
 
-def _run(coro): return _asyncio.new_event_loop().run_until_complete(coro)
+def _run18(coro): return _asyncio.new_event_loop().run_until_complete(coro)
 
-_bridge = _MB(context=None)
+_bridge18 = _MB(context=None)
 
-# (a) emoji 模式：走平台接口贴表情，且不额外发文本
-_bot = _Bot(); _ev = _Ev(_bot)
-cfg = _S2.from_dict({"message": {"mark_option": "emoji"}})
-assert cfg.mark_option == "emoji"
-_run(_bridge.mark_relayed(_ev, cfg))
-assert _bot.calls == [("12345", "124")], _bot.calls   # 默认 👌 = EMOJI_OK_GESTURE(124)
-assert _ev.sent == [], "emoji 模式不应再发文本"
+# (a) 未配置时默认不提醒
+assert _S2.from_dict({}).mark_option == "none"
 
-# (b) text 模式：发一条 ✅ 文本，且不贴表情
-_bot2 = _Bot(); _ev2 = _Ev(_bot2)
-cfg2 = _S2.from_dict({"message": {"mark_option": "text"}})
-_run(_bridge.mark_relayed(_ev2, cfg2))
-assert len(_ev2.sent) == 1, _ev2.sent
-assert _ev2.sent[0].chain[0].text.startswith("✅"), _ev2.sent[0].chain[0].text
-assert _bot2.calls == [], "text 模式不应贴表情"
+# (b) text 模式：发一条 ✅ 文本
+_ev18 = _Ev18()
+_run18(_bridge18.mark_relayed(_ev18, _S2.from_dict({"message": {"mark_option": "text"}})))
+assert len(_ev18.sent) == 1, _ev18.sent
+assert _ev18.sent[0].chain[0].text.startswith("✅"), _ev18.sent[0].chain[0].text
 
 # (c) none 模式：什么都不做
-_bot3 = _Bot(); _ev3 = _Ev(_bot3)
-_run(_bridge.mark_relayed(_ev3, _S2.from_dict({"message": {"mark_option": "none"}})))
-assert _bot3.calls == [] and _ev3.sent == []
+_ev18b = _Ev18()
+_run18(_bridge18.mark_relayed(_ev18b, _S2.from_dict({"message": {"mark_option": "none"}})))
+assert _ev18b.sent == []
 
-# (d) 平台不支持（无 bot / 无接口）→ 静默跳过，且**不**回退成文本刷屏
-_ev4 = _Ev(bot=None)
-_run(_bridge.mark_relayed(_ev4, _S2.from_dict({"message": {"mark_option": "emoji"}})))
-assert _ev4.sent == [], "不支持的平台不应回退成文本"
-_ev5 = _Ev(_Bot(supports=False))
-_run(_bridge.mark_relayed(_ev5, _S2.from_dict({"message": {"mark_option": "emoji"}})))
-assert _ev5.sent == []
+# (d) 旧配置的 emoji 贴表情已移除：自动按不提醒处理，不残留贴表情实现与表情 ID 配置
+assert _S2.from_dict({"message": {"mark_option": "emoji"}}).mark_option == "none"
+assert not hasattr(_MB, "_react_with_emoji"), "贴表情回执已移除"
+assert not hasattr(_S2.from_dict({}), "mark_emoji_id"), "回执表情 ID 配置已移除"
 
-# (e) 贴表情抛异常不得向上传播（回执失败不能影响转发）
-_ev6 = _Ev(_Bot(fail=True))
-_run(_bridge.mark_relayed(_ev6, _S2.from_dict({"message": {"mark_option": "emoji"}})))
-
-# (f) 非法值回落到默认 emoji
-assert _S2.from_dict({"message": {"mark_option": "bogus"}}).mark_option == "emoji"
-
-# (g) 自定义回执表情 ID：配置后必须逐字使用用户填的 ID
-_bot7 = _Bot(); _ev7 = _Ev(_bot7)
-cfg7 = _S2.from_dict({"message": {"mark_option": "emoji", "mark_emoji_id": "2705"}})
-assert cfg7.mark_emoji_id == 2705
-_run(_bridge.mark_relayed(_ev7, cfg7))
-assert _bot7.calls == [("12345", "2705")], _bot7.calls
-
-# (h) 表情 ID 缺省/非法/数字形态 → 一律安全回落到默认 👌(124)
-for raw, expect in [(None, 124), ("", 124), ("abc", 124), (76, 76), ("76", 76), (124, 124)]:
-    payload = {} if raw is None else {"mark_emoji_id": raw}
-    got = _S2.from_dict({"message": payload}).mark_emoji_id
-    assert got == expect, (raw, got)
-from astrbot_plugin_minecraft_queqiao.core.constants import (
-    EMOJI_LOVE,
-    EMOJI_OK_GESTURE,
-    EMOJI_ROSE,
-    EMOJI_THUMBS_UP,
-)
-assert (EMOJI_OK_GESTURE, EMOJI_THUMBS_UP, EMOJI_LOVE, EMOJI_ROSE) == (124, 76, 66, 63), \
-    (EMOJI_OK_GESTURE, EMOJI_THUMBS_UP, EMOJI_LOVE, EMOJI_ROSE)
-print("OK  emoji 贴表情 / text 文本 / none 静默，不支持平台与异常均安全降级")
-print("OK  回执表情 ID 可配置（默认 124 👌），非法输入回落默认值；"
-      "表情常量 = 👌124 / 👍76 / ❤️66 / 🌹63")
+# (e) 非法值回落到 none
+assert _S2.from_dict({"message": {"mark_option": "bogus"}}).mark_option == "none"
+print("OK  text 文本 / none 不提醒；emoji 贴表情已移除，旧配置自动按不提醒处理")
 
 print("\n全部离线逻辑校验通过 ✅（含转发回执）")
 
@@ -1302,8 +1254,9 @@ assert _mi26["chatimage_name"]["default"] == "图片"
 assert "ChatImage" in _mi26["forward_image_to_mc"]["hint"], \
     "forward_image_to_mc 的 hint 必须说明依赖 ChatImage 模组"
 _mk26 = list(_mi26.keys())
-assert _mk26.index("forward_image_to_mc") == _mk26.index("mark_emoji_id") + 1, \
-    f"forward_image_to_mc 必须紧跟 mark_emoji_id，实际顺序: {_mk26}"
+assert "mark_emoji_id" not in _mi26, "回执表情 ID 配置已移除"
+assert _mk26.index("forward_image_to_mc") == _mk26.index("mark_option") + 1, \
+    f"forward_image_to_mc 必须紧跟 mark_option，实际顺序: {_mk26}"
 assert _mk26.index("chatimage_name") == _mk26.index("forward_image_to_mc") + 1
 print("OK  CICode 生成 / URL 解析优先级 / 配置解析 / 端到端转发 / 前缀过滤 / schema 同步")
 

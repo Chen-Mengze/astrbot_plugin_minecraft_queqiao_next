@@ -129,24 +129,12 @@ The “⚙ 设置” button at the top right (next to the auto-refresh toggle) o
 | `broadcast_format` | string | `[{platform}]{sender}: {message}` | Format used when relaying into the game; supports `{platform}` `{sender}` `{message}` `{display_name}` `{server_name}` |
 | `platform_names` | list | `["aiocqhttp=QQ"]` | Platform name mapping: `raw=display`, e.g. `aiocqhttp=QQ` |
 | `broadcast_color` | string | `white` | Message color; MC color name or `#RRGGBB` |
-| `mark_option` | string | `emoji` | Acknowledgement after a successful relay: `text` replies ✅ / `emoji` reacts to the original message / `none` silent |
-| `mark_emoji_id` | int | `124` | Reaction emoji ID (QQ emoji ID; default `124` = 👌) |
+| `mark_option` | string | `none` | Acknowledgement after a successful relay: `text` replies ✅ / `none` silent |
 | `forward_image_to_mc` | bool | `false` | Relay group images into the game (requires ChatImage on the client to render; otherwise the CICode text is shown) |
 | `chatimage_name` | string | `图片` | In-game display name for the image |
 | `forward_image_from_mc` | bool | `false` | In-game images (CICode / links) downloaded and sent back as images |
 
-> Get a session's UMO with **AstrBot's built-in `/sid` command**: send `/sid` in the target group/DM, and the `UMO` field in the reply is the value to fill in (e.g. `aiocqhttp:GroupMessage:123456789`). This list drives three things at once: which sessions receive MC messages, which sessions' messages are relayed into MC, and which server the `mc` commands issued in that session belong to.
-
-> `mark_option: emoji` adds a reaction to the **original message** that triggered the relay (no extra message is sent); every aiocqhttp protocol implementation (NapCat, Lagrange, LLOneBot, etc.) supports it, other platforms are skipped silently.
-
-Common `mark_emoji_id` values:
-
-| Constant | ID | Emoji |
-|----------|----|-------|
-| `EMOJI_OK_GESTURE` | `124` | 👌 |
-| `EMOJI_THUMBS_UP` | `76` | 👍 |
-| `EMOJI_LOVE` | `66` | ❤️ |
-| `EMOJI_ROSE` | `63` | 🌹 |
+> Get a session's UMO with **AstrBot's built-in `/sid` command**: send `/sid` in the target group/DM, and the `UMO` field in the reply is the value to fill in (e.g. `aiocqhttp:GroupMessage:123456789`). A group UMO may also look like `aiocqhttp:GroupMessage:123456789_987654321` (the first part is the QQ number of the member who ran `/sid`); matching uses the adapter, message type and group number, so messages from other members of the same group are relayed too. This list drives three things at once: which sessions receive MC messages, which sessions' messages are relayed into MC, and which server the `mc` commands issued in that session belong to.
 
 </details>
 

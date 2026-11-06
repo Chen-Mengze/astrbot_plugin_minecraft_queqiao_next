@@ -160,15 +160,6 @@ DEFAULT_DISPLAY_NAME = "MC"
 # 转发到 MC 成功后给原消息的回执文案（mark_option: text）
 MARK_TEXT_OK = "✅ 已转发到游戏内"
 
-# 消息转发反馈的 Emoji 响应常量（QQ 表情 ID，mark_option: emoji 时使用）
-EMOJI_OK_GESTURE = 124  # 👌
-EMOJI_THUMBS_UP = 76  # 👍
-EMOJI_LOVE = 66  # ❤️
-EMOJI_ROSE = 63  # 🌹
-
-# 给消息贴表情走的 OneBot 扩展接口（aiocqhttp `call_action` 动作名）
-API_SET_MSG_EMOJI_LIKE = "set_msg_emoji_like"
-
 # ---- ChatImage 图片转发 ----
 
 # 游戏端渲染图片依赖 ChatImage 模组（https://github.com/kitUIN/ChatImage）：

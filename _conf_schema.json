@@ -269,19 +269,12 @@
               "mark_option": {
                 "type": "string",
                 "description": "转发提醒方式",
-                "hint": "选择转发成功后的提醒方式：text为文本提醒，emoji为贴表情，none为不提醒",
+                "hint": "选择转发成功后的提醒方式：text为文本提醒，none为不提醒",
                 "options": [
                   "text",
-                  "emoji",
                   "none"
                 ],
-                "default": "emoji"
-              },
-              "mark_emoji_id": {
-                "type": "int",
-                "description": "回执表情 ID",
-                "hint": "转发成功后所贴的表情（仅 mark_option=emoji 且平台为 aiocqhttp 时生效）。填 QQ 表情 ID，默认 124 为 👌、76 为 👍、66 为 ❤️、63 为 🌹",
-                "default": 124
+                "default": "none"
               },
               "forward_image_to_mc": {
                 "type": "bool",
