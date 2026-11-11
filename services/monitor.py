@@ -147,17 +147,16 @@ _BRAND_SOURCE_PRIORITY = {"status": 3, "command": 2, "slp": 1}
 # Forge/NeoForge 的 tps 指令支持 `dim <维度>` 子命令，只返回一行：
 # `forge tps dim minecraft:overworld` → `Dim minecraft:overworld (...): Mean TPS: 20.000`。
 # 完整 `forge tps` 会列出全部维度，大型整合包输出数 KB，超过单个 RCON
-# 响应包上限（4096 字节）后会被服务端拆包；经鹊桥 RCON 转发时读取能力由
-# 鹊桥模组决定（可能只取首包），长输出拆包会造成回包与请求错位。因此
-# 鹊桥通道优先改用单维度短输出形式，跑在插件内的直连 RCON 可完整拼接
-# 拆包响应，仍用完整指令以保留 Overall 均值。
+# 响应包上限（4096 字节）后会被服务端拆包；部分 RCON 客户端只读首个回包，
+# 余包会串到下一条指令，造成 TPS 解析失败或把 TPS 文本当成玩家列表。
+# 因此 Forge/NeoForge 统一优先单维度短输出，完整指令仅作兜底。
 _FORGE_SHORT_COMMAND_ARGS = "dim minecraft:overworld"
 # 完整 Forge tps 指令（输出所有维度，长输出会被服务端拆包）
 _LONG_FORGE_COMMANDS = ("forge tps", "neoforge tps")
 
 
 def tps_command_candidates(
-    server_type: str | None, preference: str, short_output: bool = False
+    server_type: str | None, preference: str
 ) -> list[str]:
     """auto 模式下按服务端品牌给出候选 TPS 指令（按尝试顺序）。
 
@@ -167,9 +166,11 @@ def tps_command_candidates(
     - Paper/Spigot/Bukkit 等布克特系：``tps``
     - 未知/无缓存：从 ``tps`` 起步
 
-    ``short_output=True``（鹊桥 RCON 通道）时，Forge/NeoForge 候选先插入
-    ``dim <主世界>`` 短输出形式：单维度回包不会超过一个 RCON 包，避免长
-    输出拆包导致的响应错位（TPS 解析失败 / TPS 文本被当成玩家列表）。
+    Forge/NeoForge 优先用 ``dim <主世界>`` 短输出形式：完整 tps 输出会列出
+    全部维度，大型整合包可达数 KB，超过单个 RCON 响应包上限后会被截断（部分
+    客户端只读首个回包，余包还会串到下一条指令，导致 TPS 解析失败或把 TPS
+    文本当成玩家列表）。单维度回包只有一行，不会触发这个问题；不支持该子
+    指令时再回退完整形式。
 
     末尾统一追加通用兜底指令（去重）：采集侧执行到能解析出数值的指令为止，
     品牌识别错误时仍能采到 TPS。显式填写具体指令时只返回该指令，不做自动
@@ -186,12 +187,9 @@ def tps_command_candidates(
     else:
         forge_commands = []
     if forge_commands:
-        first = list(forge_commands)
-        if short_output:
-            first = [
-                f"{command} {_FORGE_SHORT_COMMAND_ARGS}"
-                for command in forge_commands
-            ] + first
+        first = [
+            f"{command} {_FORGE_SHORT_COMMAND_ARGS}" for command in forge_commands
+        ] + forge_commands
     elif brand in ("fabric", "quilt"):
         first = ["spark tps"]
     elif brand:
@@ -1012,21 +1010,6 @@ class MonitorCollector:
         else:
             self._errors.pop(name, None)
 
-    @staticmethod
-    def _queqiao_rcon_active(instance: Any) -> bool:
-        """本轮是否大概率走鹊桥 RCON 通道（决定是否优先用短输出 TPS 指令）。
-
-        指令通道是「鹊桥优先」：只要 WS 已连接且未被判定「鹊桥 RCON 不可用」，
-        指令就先发往鹊桥。鹊桥 RCON 对超长回包的拼接能力由鹊桥模组决定，
-        完整 `forge tps` 在多维度服务器上有数 KB 输出，可能被截断并遗留
-        未读包、造成回包与请求错位，因此该通道优先用单维度短输出指令；
-        直连通道由插件自己完整拼接拆包，继续用完整指令保留 Overall 均值。
-        """
-        client = getattr(instance, "client", None)
-        if client is None or not getattr(client, "connected", False):
-            return False
-        return getattr(instance, "queqiao_rcon_ok", None) is not False
-
     async def _execute_tps_command(
         self, name: str, instance: Any, command: str
     ) -> tuple[tuple[float | None, float | None, float | None] | None, str | None]:
@@ -1062,20 +1045,16 @@ class MonitorCollector:
         **通道失败（超时/未连接）不换指令重发**——按「超时不等于失败」语义，
         换一条指令重发只会在服务器上多执行一条命令。
 
-        鹊桥 RCON 通道优先短输出候选（见 `_queqiao_rcon_active`）；缓存里
-        的完整 `forge tps`（长输出）在该通道不再优先复用，避免每轮采样都
-        触发服务端拆包、把未读包留给后续指令造成串扰。
+        缓存里的完整 `forge tps`（长输出）不再优先复用：优先短输出候选，
+        避免长回包被 RCON 截断后把余包留给后续指令造成串扰。
         """
-        short_output = self._queqiao_rcon_active(instance)
         candidates = tps_command_candidates(
-            self._server_types.get(name),
-            settings.tps_command,
-            short_output=short_output,
+            self._server_types.get(name), settings.tps_command
         )
         cached = self._tps_commands.get(name)
         if cached and cached in candidates:
             candidates.remove(cached)
-            if short_output and cached in _LONG_FORGE_COMMANDS:
+            if cached in _LONG_FORGE_COMMANDS:
                 candidates.append(cached)
             else:
                 candidates.insert(0, cached)
@@ -1230,13 +1209,7 @@ class MonitorCollector:
         latest = self.store.latest(name)
         server_type = self._server_types.get(name)
         ping_target = self._resolve_ping_target(name, settings)
-        instance = self.server_manager.get(name)
-        short_output = (
-            self._queqiao_rcon_active(instance) if instance is not None else False
-        )
-        candidates = tps_command_candidates(
-            server_type, settings.tps_command, short_output=short_output
-        )
+        candidates = tps_command_candidates(server_type, settings.tps_command)
         cached_command = self._tps_commands.get(name)
         return {
             "enabled": settings.enabled,

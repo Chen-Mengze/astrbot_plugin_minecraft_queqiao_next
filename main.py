@@ -102,7 +102,7 @@ def _migrate_legacy_data_dir(
     PLUGIN_NAME,
     "Chen-Mengze",
     "通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通与服务器管理",
-    "v0.9.0",
+    "v0.9.1",
     "https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next",
 )
 class MinecraftQueQiaoPlugin(Star):

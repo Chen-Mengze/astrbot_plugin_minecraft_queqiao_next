@@ -24,7 +24,7 @@
   - **图片互通**：外部图片经 ChatImage / 内置 HTTP / 第三方图床进入游戏；游戏内图片与链接下载后发回外部会话
   - **服务器管理**：多服务器、状态与在线玩家、远程指令、广播；直连 SLP / RCON 兜底
   - **WebUI 仪表盘**：服务器配置、互通终端、性能监控、图床与面板偏好
-- 最小依赖：AstrBot 运行时 + `websockets`（必需）+ `aiohttp`（惰性，缺失不影响其余功能）；直连 RCON 兜底为插件内置实现（标准库 asyncio），无额外依赖
+- 最小依赖：AstrBot 运行时 + `websockets`（必需）+ `aio-mc-rcon` / `aiohttp`（惰性，缺失不影响其余功能）
 
 ### 1.1 与 adapter 的关键差异（改动前必须理解）
 
@@ -46,7 +46,7 @@
 | `core/models.py` | ✅ | 鹊桥事件与实体模型（防御式 `from_dict`） |
 | `core/models_config.py` | ✅ | `ServerConfig`（对齐 `_conf_schema.json` 的服务器字段） |
 | `core/queqiao_client.py` | ✅ | WS 客户端：正向/反向、握手、`echo` 关联、重连 |
-| `core/rcon_client.py` | ✅ | 直连 RCON 兜底（内置协议实现：完整拼接拆包响应、校验请求 ID） |
+| `core/rcon_client.py` | ✅ | 直连 RCON 兜底（惰性 import `aiomcrcon`） |
 | `core/server_manager.py` | ✅ | 多服务器实例与指令执行（鹊桥优先 / RCON 兜底） |
 | `handlers/commands.py` | ✅ | 命令业务逻辑、自定义指令、多服务器选择 |
 | `services/` | ✅ | 绑定、转发、图床、渲染、翻译、日志、监控、指标、Web API 等服务 |
@@ -59,7 +59,7 @@
 | `tests_offline.py` | ✅ | 离线逻辑自检（桩替代 astrbot/websockets） |
 | `LICENSE` | ✅ | 许可证 |
 | `logo.png` | ✅ | 插件图标 |
-| `requirements.txt` | 可选 | 运行时依赖（当前仅 websockets / aiohttp） |
+| `requirements.txt` | 可选 | 运行时依赖（当前仅 websockets / aio-mc-rcon / aiohttp） |
 
 ---
 
@@ -75,7 +75,7 @@ astrbot_plugin_minecraft_queqiao_next/
 │   ├── models.py           #   鹊桥事件与实体模型（防御式 from_dict）
 │   ├── models_config.py    #   ServerConfig（对齐 _conf_schema.json）
 │   ├── queqiao_client.py   #   WS 客户端：正/反向、握手、echo 关联、重连
-│   ├── rcon_client.py      #   直连 RCON 兜底（内置协议实现，拼接拆包响应）
+│   ├── rcon_client.py      #   直连 RCON 兜底（惰性 import aiomcrcon）
 │   └── server_manager.py   #   多服务器实例与指令执行（鹊桥优先/RCON 兜底）
 ├── services/               # 服务层
 │   ├── binding.py          #   账号↔游戏ID 绑定（原子写）
@@ -145,7 +145,7 @@ core/constants.py 位于最底层，零内部依赖，不得 import 本插件其
 
 - **Python 3.10+**（AstrBot 4.x 最低要求），现代联合类型写法（`dict | None`、`list[dict]`）
 - **AstrBot API**：`astrbot.api.star`（register, Star, Context, StarTools）、`astrbot.api.event`（filter, AstrMessageEvent, MessageChain）、`astrbot.api`（logger, AstrBotConfig）、`astrbot.api.message_components`（Plain / Image / Reply）、`astrbot.api.web`（Web API 响应）、`astrbot.core.star.filter.command`（GreedyStr）
-- **依赖管理**：`requirements.txt` 声明。`websockets>=12.0` 为鹊桥连接必需；`aiohttp>=3.11.18`（内置图片 HTTP 服务）**惰性 import**，缺失时相关功能降级；直连 RCON 兜底使用标准库 asyncio 内置实现（`core/rcon_client.py`），不依赖第三方库
+- **依赖管理**：`requirements.txt` 声明。`websockets>=12.0` 为鹊桥连接必需；`aio-mc-rcon>=3.2.0`（直连 RCON 兜底）与 `aiohttp>=3.11.18`（内置图片 HTTP 服务）**一律惰性 import**，缺失时相关功能降级，不影响其余功能
 - **禁止引入**：不引入与原功能无关的依赖；非必要不新增 `requirements.txt` 声明
 
 ### 3.1 鹊桥版本门槛（写进文档时必须如实标注）

@@ -3252,16 +3252,19 @@ assert _MSettings35.from_dict({"auto_refresh_interval": 1}).auto_refresh_interva
 assert _MSettings35.from_dict({"auto_refresh_interval": 99999}).auto_refresh_interval == 3600
 assert _MSettings35.from_dict({}).auto_refresh_interval == 10
 # auto 指令解析：按服务端品牌生成候选指令（首个优先执行，失败依次回退）
-assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps"
+assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps dim minecraft:overworld", \
+    "Forge 优先单维度短输出，避免完整维度列表的长回包被截断"
 assert _resolve_tps35("Paper 1.20.4", "") == "tps"
 assert _resolve_tps35("Fabric 0.14.21", "auto") == "spark tps", "Fabric 无内置 tps，用 spark"
 assert _resolve_tps35("spigot 1.16.5", "auto") == "tps"
 assert _resolve_tps35(None, "auto") == "tps", "未知/无缓存一律默认尝试 tps"
 assert _resolve_tps35("forge 1.20.1", "spark tps") == "spark tps", "显式指令优先于自动"
-# NeoForge 必须先试 neoforge tps（识别成 forge 会执行错误指令）
-assert _tps_cands35("NeoForge 21.1.0", "auto")[:2] == ["neoforge tps", "forge tps"]
+# NeoForge 必须先试 neoforge tps（识别成 forge 会执行错误指令），且优先短输出
+assert _tps_cands35("NeoForge 21.1.0", "auto")[:2] == [
+    "neoforge tps dim minecraft:overworld", "forge tps dim minecraft:overworld"]
 # 品牌指令后追加通用兜底（去重）：品牌识别错误时仍有机会采到 TPS
-assert _tps_cands35("forge 1.20.1", "auto") == ["forge tps", "tps", "spark tps"]
+assert _tps_cands35("forge 1.20.1", "auto") == [
+    "forge tps dim minecraft:overworld", "forge tps", "tps", "spark tps"]
 assert _tps_cands35("Fabric 1.20.1", "auto") == ["spark tps", "tps", "forge tps"]
 assert _tps_cands35(None, "auto") == ["tps", "forge tps", "spark tps"]
 assert _tps_cands35("purpur 1.20.4", "auto")[0] == "tps"
@@ -3604,7 +3607,7 @@ async def _d35():
     assert _col35.store.latest("SrvDown") is None, "未连接不应产生样本"
     assert "未连接" in _col35.status("SrvDown")["last_error"]
     # auto 候选回退：首轮品牌未知 → tps 失败后 forge tps 成功，品牌从实测指令
-    # 反推为 forge；后续轮次直接复用缓存的 forge tps
+    # 反推为 forge；后续轮次优先用单维度短输出（避免完整维度列表长回包被截断）
     _col35._ping = _fake_ping_forge35
     await _smp("SrvForge")
     assert _sm35.get("SrvForge").commands == ["tps", "forge tps"], \
@@ -3613,8 +3616,10 @@ async def _d35():
     assert _col35.store.latest("SrvForge").tps1 == 20.0
     assert _col35.store.latest("SrvForge").tps5 is None, "Forge 单值没有 5m 档"
     await _smp("SrvForge")
-    assert _sm35.get("SrvForge").commands[-1] == "forge tps", "后续轮次复用已缓存指令"
-    assert _col35.status("SrvForge")["tps_command_resolved"] == "forge tps"
+    assert _sm35.get("SrvForge").commands[-1] == "forge tps dim minecraft:overworld", \
+        "后续轮次使用缓存的单维度短输出指令"
+    assert _col35.status("SrvForge")["tps_command_resolved"] \
+        == "forge tps dim minecraft:overworld"
     assert _col35.status("SrvForge")["server_type"] == "forge"
     # 显式指令优先于自动选择，且不走候选回退
     _col35.apply_settings("SrvForge", {"tps_command": "spark tps"})
@@ -3623,11 +3628,11 @@ async def _d35():
     _col35.apply_settings("SrvForge", {"tps_command": "spark tps"})
     await _smp("SrvForge")
     assert _sm35.get("SrvForge").commands[-1] == "spark tps", "显式指令覆盖自动选择"
-    # get_status 自报品牌：不依赖延迟探测域名，首轮即执行 forge tps
+    # get_status 自报品牌：不依赖延迟探测域名，首轮即执行单维度短输出
     _col35._ping = None
     await _smp("SrvStatus")
-    assert _sm35.get("SrvStatus").commands == ["forge tps"], \
-        "get_status 识别到 forge 后首轮即用 forge tps"
+    assert _sm35.get("SrvStatus").commands == ["forge tps dim minecraft:overworld"], \
+        "get_status 识别到 forge 后首轮即用短输出指令"
     assert _col35.status("SrvStatus")["server_type"] == "forge"
     assert _col35.store.latest("SrvStatus").tps1 == 20.0
     # 通道失败（output=None）：只尝试首个候选，不换指令重发
@@ -7290,9 +7295,8 @@ print("OK  名称常量分离/首次复制含子目录/旧目录保留/新目录
 
 
 
-print("\n=== 61. RCON 长回包拆包 / 串扰：TPS 与玩家列表互不污染 ===")
+print("\n=== 61. RCON 长回包串扰：TPS 与玩家列表互不污染 ===")
 import asyncio as _asyncio61
-import struct as _struct61
 from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     strip_format_codes as _strip61,
 )
@@ -7300,8 +7304,6 @@ from astrbot_plugin_minecraft_queqiao_next.core.rcon_client import (
     RconClient as _RC61,
     looks_like_player_list as _looks_pl61,
     looks_like_tps_output as _looks_tps61,
-    _encode_packet as _enc61,
-    _decode_packet as _dec61,
 )
 from astrbot_plugin_minecraft_queqiao_next.core.models_config import (
     ServerConfig as _SC61,
@@ -7355,70 +7357,24 @@ assert _parse_tps61(
 assert _parse_tps61("There are 2 of a max of 20 players online: Alice, Bob") is None
 assert _parse_tps61("TPS: 20.0, 30.0, 25.0") is None
 
-# (c) Forge/NeoForge 短输出指令：鹊桥 RCON 通道优先 \`dim <主世界>\`，
-# 输出单行不会触发服务端拆包；直连通道仍用完整指令保留 Overall 均值
-assert _cands61("forge 1.20.1", "auto", short_output=True)[:2] == [
+# (c) Forge/NeoForge 一律优先 dim 主世界短输出（单行，不会触发长回包
+# 截断/串包），完整指令仅作兜底；其它品牌与显式指令不受影响
+assert _cands61("forge 1.20.1", "auto")[:2] == [
     "forge tps dim minecraft:overworld", "forge tps"]
-assert _cands61("NeoForge 21.1.0", "auto", short_output=True)[:2] == [
+assert _cands61("NeoForge 21.1.0", "auto")[:2] == [
     "neoforge tps dim minecraft:overworld", "forge tps dim minecraft:overworld"]
-assert _cands61("Paper 1.20.4", "auto", short_output=True) \
-    == ["tps", "forge tps", "spark tps"]
-assert _cands61("forge 1.20.1", "spark tps", short_output=True) == ["spark tps"], \
+assert _cands61("Paper 1.20.4", "auto") == ["tps", "forge tps", "spark tps"]
+assert _cands61("forge 1.20.1", "spark tps") == ["spark tps"], \
     "显式指令不受短输出策略影响"
 assert _brand61("forge tps dim minecraft:overworld") == "forge"
 assert _brand61("neoforge tps dim minecraft:overworld") == "neoforge"
 
-# (d) 直连 RCON：协议包编解码 + 多包响应完整拼接（本地假 RCON 服务端）
-_pkt61 = _enc61(1234, 2, b"hello")
-assert _dec61(_pkt61) == (1234, 2, b"hello")
-
-
-async def _rcon_roundtrip61(payload_chunks):
-    async def _handler(reader, writer):
-        try:
-            length = _struct61.unpack("<i", await reader.readexactly(4))[0]
-            await reader.readexactly(length)  # 登录包
-            writer.write(_enc61(42, 0, b""))  # 鉴权响应
-            await writer.drain()
-            length = _struct61.unpack("<i", await reader.readexactly(4))[0]
-            body = await reader.readexactly(length)  # 指令包
-            req_id = _struct61.unpack("<ii", body[:8])[0]
-            for chunk in payload_chunks:
-                writer.write(_enc61(req_id, 0, chunk))
-                await writer.drain()
-                await _asyncio61.sleep(0.01)
-        except (asyncio.IncompleteReadError, ConnectionError):
-            pass
-        finally:
-            writer.close()
-
-    server = await _asyncio61.start_server(_handler, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    config = _SC61.from_dict({"cmd": {
-        "rcon_enabled": True, "rcon_host": "127.0.0.1",
-        "rcon_port": port, "rcon_password": "pw",
-    }})
-    client = _RC61(config)
-    try:
-        assert await client.connect() is True
-        assert client.connected is True
-        return await client.execute("forge tps")
-    finally:
-        await client.close()
-        server.close()
-        await server.wait_closed()
-
-
-# 完整 forge tps 输出被服务端拆成 4096 字节 + 尾包：必须拿到完整输出，
-# 不能只留首包（旧实现的截断/串扰根因）
-_big61 = b"D" * 4096
-_out61 = _asyncio61.run(_rcon_roundtrip61([_big61, b"Overall tail"]))
-assert _out61 == ("D" * 4096) + "Overall tail", "多包响应必须完整拼接"
-
-
-# 单包响应也照常工作（不因等待拆包而卡住）
-_out61b = _asyncio61.run(_rcon_roundtrip61([b"single"]))
-assert _out61b == "single"
+# (d) 回归守卫：直连 RCON 必须使用稳定的 aio-mc-rcon 惰性实现。
+# v0.9.0 曾自实现 RCON 协议，鉴权包类型判断错误导致连接不上、启动被
+# 5 秒超时拖慢；这里锁死实现方式，防止再次引入。
+import astrbot_plugin_minecraft_queqiao_next.core.rcon_client as _rc61_mod
+assert hasattr(_rc61_mod, "_RCON_AVAILABLE"), "直连 RCON 应基于 aio-mc-rcon"
+assert not hasattr(_rc61_mod, "_encode_packet"), "不应保留自实现 RCON 协议代码"
 
 # (e) TPS 采样串扰自愈：先读到玩家列表文本 → 重试同一只读指令拿回 TPS
 class _Inst61:
@@ -7436,9 +7392,6 @@ class _Inst61:
 
 
 _col61 = _MC61(pathlib.Path(tempfile.mkdtemp()), None)
-assert _col61._queqiao_rcon_active(_Inst61([], True, True)) is True
-assert _col61._queqiao_rcon_active(_Inst61([], True, False)) is False
-assert _col61._queqiao_rcon_active(_Inst61([], False, None)) is False
 _inst61 = _Inst61([
     "There are 1 of a max of 20 players online: Steve",
     "TPS from last 1m, 5m, 15m: 19.5, 20.0, 20.0",
@@ -7543,4 +7496,4 @@ _i_serial61.client = _CliSerial61()
 _i_serial61.rcon = _Rcon61()
 _asyncio61.run(_concurrent61(_i_serial61))
 assert _i_serial61.client.max_active == 1, "RCON 指令必须串行执行"
-print("OK  串扰文本不解析成玩家 / TPS 颜色码与截断解析 / 短输出候选 / RCON 多包拼接 / 只读查询串扰自愈 / 指令串行")
+print("OK  串扰文本不解析成玩家 / TPS 颜色码与截断解析 / Forge 短输出候选 / RCON 实现回归守卫 / 只读查询串扰自愈 / 指令串行")
