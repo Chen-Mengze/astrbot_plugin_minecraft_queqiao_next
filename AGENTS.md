@@ -8,13 +8,13 @@
 > **来源与维护方式**：本文件最初由 [XTsat/agent-templates](https://github.com/XTsat/agent-templates) 的 `templates/astrbot-plugin/AGENTS.md` 回填而成；**自 2026-11-06 起本仓库独立维护，不再与上游同步**——既不跟随模板仓库，也不跟随上游插件 `XTsat/astrbot_plugin_minecraft_queqiao`。
 > 用户说「更新 AGENTS」时按此流程：① 通读本文件、实际代码与配置，确认现状与本文件的差异 → ② 按第 7 章文档维护规则做增量修改 → ③ 展示 diff 与改动清单，等用户确认后再落盘。**禁止整文件覆盖**，**禁止拉取上游模板或上游项目文件覆盖本地**。
 >
-> 与上游模板的既有差异（已在本仓库固化，不再回填模板）：采用分层多文件架构（`core/` + `services/` + `handlers/`，非单文件）；日志使用二级前缀 `[{PLUGIN_NAME}][{server_name}]`；WebUI 页面在 `pages/dashboard/`（原生 JS）；另含本仓库特有专题——鹊桥协议与连接层（6.4）、指令通道超时语义（6.5）、AI 触发（6.6）、前端持久化（5.5）。
+> 与上游模板的既有差异（已在本仓库固化，不再回填模板）：采用分层多文件架构（`core/` + `services/` + `handlers/`，非单文件）；日志使用二级前缀 `[{PLUGIN_NAME}][{server_name}]`；WebUI 页面在 `pages/dashboard/`（原生 JS）；另含本仓库特有专题——鹊桥协议与连接层（6.4）、指令通道超时语义（6.5）、消息前缀匹配（6.6）、前端持久化（5.5）。
 
 ---
 
 ## 1. 项目概览
 
-`astrbot_plugin_minecraft_queqiao_next` 是 AstrBot 插件（要求 AstrBot >= 4.10.4）：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao) 模组连接 Minecraft 服务器，实现群服消息互通、图片互通、服务器管理与 AI 聊天。本仓库是上游 `XTsat/astrbot_plugin_minecraft_queqiao` 的独立维护版本，自 2026-11-06 起不再同步上游、独立发布；升级说明与许可证（AGPL-3.0）见 `README.md` 与 `LICENSE`。
+`astrbot_plugin_minecraft_queqiao_next` 是 AstrBot 插件（要求 AstrBot >= 4.10.4）：通过[鹊桥（QueQiao）](https://github.com/17TheWord/QueQiao) 模组连接 Minecraft 服务器，实现群服消息互通、图片互通与服务器管理。本仓库是上游 `XTsat/astrbot_plugin_minecraft_queqiao` 的独立维护版本，自 2026-11-06 起不再同步上游、独立发布；升级说明与许可证（AGPL-3.0）见 `README.md` 与 `LICENSE`。
 
 - 配置结构**参照** [astrbot_plugin_minecraft_adapter](https://github.com/railgun19457/astrbot_plugin_minecraft_adapter)
 - 连接方式**替换**为鹊桥 V2 协议（WebSocket + `echo` 请求响应关联）
@@ -23,9 +23,8 @@
   - **消息互通**：游戏 ↔ 外部会话双向转发，回环抑制、富文本剥离；回复 Bot 转发的游戏消息时自动反解玩家名并前置 `@`
   - **图片互通**：外部图片经 ChatImage / 内置 HTTP / 第三方图床进入游戏；游戏内图片与链接下载后发回外部会话
   - **服务器管理**：多服务器、状态与在线玩家、远程指令、广播；直连 SLP / RCON 兜底
-  - **AI 聊天**：游戏内聊天前缀触发 LLM，回复私聊给玩家
   - **WebUI 仪表盘**：服务器配置、互通终端、性能监控、图床与面板偏好
-- 最小依赖：AstrBot 运行时 + `websockets`（必需）+ `aio-mc-rcon` / `aiohttp`（惰性，缺失不影响其余功能）
+- 最小依赖：AstrBot 运行时 + `websockets`（必需）+ `aiohttp`（惰性，缺失不影响其余功能）；直连 RCON 兜底为插件内置实现（标准库 asyncio），无额外依赖
 
 ### 1.1 与 adapter 的关键差异（改动前必须理解）
 
@@ -35,7 +34,6 @@
 | 连接寻址 | `host` + `port` + URL 上的 `token` | `server_name`≡鹊桥 `server_name`，走 `x-self-name` Header |
 | 鉴权 | URL query token | `Authorization: Bearer <access_token>` Header |
 | 连接方向 | 仅正向 | 正向 + 反向（`ws_mode`） |
-| AI 聊天触发 | 私有 `CHAT_REQUEST` 事件 | 聊天前缀触发（`ai_chat_prefix`，无斜杠指令） |
 | 玩家详情 | REST 接口 | **无对应接口**，降级为 RCON `data get` |
 | 状态查询 | REST | `get_status`（需鹊桥 ≥ v0.5.0） |
 
@@ -48,7 +46,7 @@
 | `core/models.py` | ✅ | 鹊桥事件与实体模型（防御式 `from_dict`） |
 | `core/models_config.py` | ✅ | `ServerConfig`（对齐 `_conf_schema.json` 的服务器字段） |
 | `core/queqiao_client.py` | ✅ | WS 客户端：正向/反向、握手、`echo` 关联、重连 |
-| `core/rcon_client.py` | ✅ | 直连 RCON 兜底（惰性 import `aiomcrcon`） |
+| `core/rcon_client.py` | ✅ | 直连 RCON 兜底（内置协议实现：完整拼接拆包响应、校验请求 ID） |
 | `core/server_manager.py` | ✅ | 多服务器实例与指令执行（鹊桥优先 / RCON 兜底） |
 | `handlers/commands.py` | ✅ | 命令业务逻辑、自定义指令、多服务器选择 |
 | `services/` | ✅ | 绑定、转发、图床、渲染、翻译、日志、监控、指标、Web API 等服务 |
@@ -61,7 +59,7 @@
 | `tests_offline.py` | ✅ | 离线逻辑自检（桩替代 astrbot/websockets） |
 | `LICENSE` | ✅ | 许可证 |
 | `logo.png` | ✅ | 插件图标 |
-| `requirements.txt` | 可选 | 运行时依赖（当前仅 websockets / aio-mc-rcon / aiohttp） |
+| `requirements.txt` | 可选 | 运行时依赖（当前仅 websockets / aiohttp） |
 
 ---
 
@@ -77,7 +75,7 @@ astrbot_plugin_minecraft_queqiao_next/
 │   ├── models.py           #   鹊桥事件与实体模型（防御式 from_dict）
 │   ├── models_config.py    #   ServerConfig（对齐 _conf_schema.json）
 │   ├── queqiao_client.py   #   WS 客户端：正/反向、握手、echo 关联、重连
-│   ├── rcon_client.py      #   直连 RCON 兜底（惰性 import aiomcrcon）
+│   ├── rcon_client.py      #   直连 RCON 兜底（内置协议实现，拼接拆包响应）
 │   └── server_manager.py   #   多服务器实例与指令执行（鹊桥优先/RCON 兜底）
 ├── services/               # 服务层
 │   ├── binding.py          #   账号↔游戏ID 绑定（原子写）
@@ -125,10 +123,9 @@ core/constants.py 位于最底层，零内部依赖，不得 import 本插件其
 
 ```
 鹊桥 WS 事件 → QueQiaoClient 分发 → main._on_queqiao_event
-  → 聊天（PlayerChatEvent）：_resolve_ai_question 命中 ai_chat_prefix → 交给 LLM → 私聊回复
-                             否则 MessageBridge 转发到已绑定的 target_sessions
+  → 聊天（PlayerChatEvent）：MessageBridge 转发到已绑定的 target_sessions
   → 进出 / 死亡 / 成就（notice）：翻译与格式渲染 → 转发 + 终端记录
-  → 指令事件（PlayerCommandEvent）：放行进互通流程，不进入 AI 分支
+  → 指令事件（PlayerCommandEvent）：放行进互通流程
 
 外部消息（@filter.event_message_type(ALL) → on_message）
   → 自定义指令匹配 → 已绑定群转发到游戏（图片转 ChatImage 代码）
@@ -148,7 +145,7 @@ core/constants.py 位于最底层，零内部依赖，不得 import 本插件其
 
 - **Python 3.10+**（AstrBot 4.x 最低要求），现代联合类型写法（`dict | None`、`list[dict]`）
 - **AstrBot API**：`astrbot.api.star`（register, Star, Context, StarTools）、`astrbot.api.event`（filter, AstrMessageEvent, MessageChain）、`astrbot.api`（logger, AstrBotConfig）、`astrbot.api.message_components`（Plain / Image / Reply）、`astrbot.api.web`（Web API 响应）、`astrbot.core.star.filter.command`（GreedyStr）
-- **依赖管理**：`requirements.txt` 声明。`websockets>=12.0` 为鹊桥连接必需；`aio-mc-rcon>=3.2.0`（直连 RCON 兜底）与 `aiohttp>=3.11.18`（内置图片 HTTP 服务）**一律惰性 import**，缺失时相关功能降级，不影响其余功能
+- **依赖管理**：`requirements.txt` 声明。`websockets>=12.0` 为鹊桥连接必需；`aiohttp>=3.11.18`（内置图片 HTTP 服务）**惰性 import**，缺失时相关功能降级；直连 RCON 兜底使用标准库 asyncio 内置实现（`core/rcon_client.py`），不依赖第三方库
 - **禁止引入**：不引入与原功能无关的依赖；非必要不新增 `requirements.txt` 声明
 
 ### 3.1 鹊桥版本门槛（写进文档时必须如实标注）
@@ -214,7 +211,7 @@ class MinecraftQueQiaoPlugin(Star):
 | 元素 | 约定 |
 |------|------|
 | 模块级常量 | `UPPER_SNAKE`（`DEFAULT_TIMEOUT`、`PLUGIN_DATA_DIR`） |
-| 私有方法 | `_` 前缀 + `snake_case`（`_resolve_ai_question`、`_on_queqiao_event`） |
+| 私有方法 | `_` 前缀 + `snake_case`（`_on_queqiao_event`、`_notify_server_online`） |
 | Web API 方法 | `api_` 前缀 |
 | 命令方法 | `cmd_` 前缀 |
 | 业务处理方法 | `handle_` 前缀（`handle_status`、`handle_bind`） |
@@ -286,9 +283,6 @@ class MinecraftQueQiaoPlugin(Star):
 > `tests_offline.py` 的桩**必须忠实反映真实 API**（尤其 `astrbot.api` 不得提供
 > `Context`），否则桩会掩盖此类错误——有一组断言专门守卫这一点。
 >
-> 另注：`LLMResponse.completion_text` 已被官方标记「过时，推荐 `result_chain`」，
-> 目前仍可用；若未来移除需改 `_ask_llm()`。
->
 > 核实方式：真实 AstrBot 源码在 `/vol2/@appdata/deepseek.harness/home/astrbot/astrbot/`，
 > 兄弟插件在 `/vol2/@appdata/deepseek.harness/home/astrbot_plugin/`。
 
@@ -317,7 +311,6 @@ class MinecraftQueQiaoPlugin(Star):
 - 配置持久化：`self.config[...]` 读写 → `self.config.save_config()` 保存
 - 服务器字段解析集中在 `ServerConfig.from_dict()`，缺字段回落到 `_conf_schema.json` 的默认值
 - 读取时防御式转换：布尔/整数用 `_to_bool` / `_to_int`，非法输入回落默认值
-- 两个前缀互相包含时 `ServerConfig.prefixes_conflict` 为真，启动时告警
 
 ### 5.4 运行时数据与持久化
 
@@ -461,42 +454,34 @@ async def cmd_sub(
 
 **超时 ≠ 失败**（改回执/兜底逻辑前必读）：鹊桥 WS 发送成功但 `API_TIMEOUT`
 内无响应时抛 `QueQiaoTimeout`——请求大概率已投递执行，只是响应慢/丢失。
-此时**禁止**换通道重发（消息/指令会重复两遍，实测发生过 AI 回复发两遍）：
+此时**禁止**换通道重发（消息/指令会重复两遍，实测发生过同一回复发两遍）：
 
 - 私聊回复（`send_private_message`）与 RCON（`send_rcon_command`）超时向上抛，
   由调用方放弃本次发送，不得自动兜底重发
 - 展示类（broadcast / title / actionbar）超时在封装层按已投递处理返回 True
 - 仅「确定失败」（未连接 / 鹊桥明确报错）才允许走兜底通道
 
-### 6.6 AI 触发与两个前缀（不可混淆）
+### 6.6 消息前缀（仅群 → MC）
 
-游戏内 AI **仅由聊天前缀触发**（`PlayerChatEvent` + `ai_chat_prefix`，默认 `ai`），全端可用。
+> **AI 聊天功能已移除**（v0.9.0）：不再有 `enable_ai_chat` / `ai_chat_prefix` /
+> `prefixes_conflict`，也不再有 LLM 调用路径。游戏内聊天一律走互通转发，
+> 不要重新引入 `ai_*` 配置或 `PlayerCommandEvent` 触发路径。
 
-> **明确不做斜杠触发**：本插件运行在 AstrBot 侧，无法向 Minecraft 注册真实指令。
-> 且斜杠输入在游戏内属于**指令**而非聊天：Fabric 侧 `onChatMessage` 直接
-> `if (message.startsWith("/")) return;`，Spigot 侧走 `PlayerCommandPreprocessEvent`
-> 而不进 `AsyncPlayerChatEvent`。因此 `/ai 你好` **既不会触发 AI，也不会转发到群**
-> ——它压根不会进入聊天事件。玩家只会看到原版 `Unknown command` 报错。
-> 不要再引入 `ai_command_*` 配置或 `PlayerCommandEvent` 触发路径；
-> 若确实需要原生指令，应由服务端侧插件提供。
-
-前缀语义：
+唯一前缀是 `auto_forward_prefix`（群 → MC）：
 
 | 配置项 | 方向 | 默认值 | 语义 |
 |---|---|---|---|
 | `auto_forward_prefix` | 群 → MC | 留空 | 群消息以此开头才转发到游戏；留空 = 全部转发（仅对已绑定 `target_sessions` 的群生效） |
-| `ai_chat_prefix` | 游戏内 → AI | `ai` | 游戏内聊天以此开头才触发 AI；留空 = 不触发 |
 
-不变式（改事件编排时必须保持）：
+不变式：
 
-- 游戏内一条消息**只命中一条路径**：先调 `_resolve_ai_question()`，返回非 None 即交给 LLM 并 return，不再转发
-- `ai_chat_prefix` 留空**不得**退化为「全部触发」——那会把全部聊天投给 LLM
-- 两个前缀互相包含时 `ServerConfig.prefixes_conflict` 为真，启动时告警
-- 指令事件（`PlayerCommandEvent`）**不得**进入 AI 分支，应放行给互通流程
-- 触发后内容为空（`ai`）不得向 LLM 发请求
 - 前缀匹配一律走 `core/constants.py` 的 `prefix_matches()` / `strip_prefix()`，
-  **禁止直接用 `str.startswith`**：短前缀（`ai`）必须做词边界判断，
+  **禁止直接用 `str.startswith`**：短前缀（如 `ai`）必须做词边界判断，
   否则 `aim`、`airport` 会被误判；纯字母前缀忽略大小写
+- 自动转发前缀留空表示「全部转发」，与「留空 = 不匹配」的通用前缀语义不同，
+  改匹配逻辑时必须区分（见 `services/message_bridge.py`）
+- 斜杠输入在游戏内属于**指令**而非聊天，不会进入 `PlayerChatEvent`，
+  因此不存在「游戏内斜杠指令触发插件功能」的路径
 
 ### 6.7 自定义指令
 
@@ -619,9 +604,9 @@ README 的读者是**插件使用者**（服务器管理员、群成员），不
 ```html
 <div align="center">
 <h1>Minecraft 鹊桥互通</h1>
-<p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
+<p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通与服务器管理</strong></p>
 <p><img alt="version" src="https://img.shields.io/badge/version-vX.Y.Z-blue"></p>
-<p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
+<p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; 群服互通</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
 ```
@@ -631,9 +616,9 @@ README 的读者是**插件使用者**（服务器管理员、群成员），不
 ```html
 <div align="center">
 <h1>Minecraft Queqiao</h1>
-<p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
+<p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging and server management</strong></p>
 <p><img alt="version" src="https://img.shields.io/badge/version-vX.Y.Z-blue"></p>
-<p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
+<p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; Group Bridge</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
 ```
@@ -737,7 +722,7 @@ README 正文严格按以下 4 大板块组织，但不强制使用 `##` 标题�
 
 ### 8.3 测试与验证
 
-- 改动纯逻辑后运行 `python3 tests_offline.py`（离线断言覆盖配置解析、事件模型、转发/回声抑制、自定义指令、绑定持久化、AI 触发方式与前缀互斥语义、端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、图床与内置图片 HTTP、SLP ping 与监控采样、面板偏好与终端日志、本地翻译、回复游戏消息反解玩家名、插件更名后的旧数据目录迁移）
+- 改动纯逻辑后运行 `python3 tests_offline.py`（离线断言覆盖配置解析、事件模型、转发/回声抑制、自定义指令、绑定持久化、消息前缀匹配语义、端到端事件流、main 导入、AstrBot 导入路径校验、显示名称与格式默认值、conf 模板↔代码默认值一致性守卫、API 超时语义「未知 ≠ 失败，禁止重发」、图床与内置图片 HTTP、SLP ping 与监控采样、面板偏好与终端日志、本地翻译、回复游戏消息反解玩家名、插件更名后的旧数据目录迁移）
 - 语法自检：`python3 -m py_compile main.py core/*.py services/*.py handlers/*.py` 无语法错误（本项目是包结构，`import main` 相对导入不可用）
 - 格式检查：`python -m ruff format .`（如果项目历史有 ruff 提交）
 - 命令有新增/删除时：同步更新 `README.md` 命令表与本文件 6.2 节

@@ -1,6 +1,6 @@
 """astrbot_plugin_minecraft_queqiao_next — AstrBot 插件
 
-通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通、服务器管理与 AI 聊天。
+通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通与服务器管理。
 配置结构参照 astrbot_plugin_minecraft_adapter，连接层改用鹊桥 V2 协议。
 """
 
@@ -29,12 +29,9 @@ from .core.constants import (
     QUIET_HOURS_ITEM_KEYS,
     QUIET_ITEM_CONNECT,
     QUIET_ITEM_CONNECT_FAIL,
-    prefix_matches,
-    strip_prefix,
 )
 from .core.models import QueQiaoEvent
 from .core.models_config import ServerConfig, _to_bool, _to_int, _to_str
-from .core.queqiao_client import QueQiaoTimeout
 from .core.server_manager import ServerManager
 from .handlers.commands import CommandHandler, parse_direct_address
 from .services.binding import BindingService
@@ -104,8 +101,8 @@ def _migrate_legacy_data_dir(
 @register(
     PLUGIN_NAME,
     "Chen-Mengze",
-    "通过鹊桥模组连接 Minecraft 服务器，实现消息互通、服务器管理与 AI 聊天",
-    "v0.8.0",
+    "通过鹊桥模组连接 Minecraft 服务器，实现群服消息互通与服务器管理",
+    "v0.9.0",
     "https://github.com/Chen-Mengze/astrbot_plugin_minecraft_queqiao_next",
 )
 class MinecraftQueQiaoPlugin(Star):
@@ -223,7 +220,6 @@ class MinecraftQueQiaoPlugin(Star):
                 f"[{PLUGIN_NAME}] 已配置服务器: {config.server_name} "
                 f"({'反向' if config.is_reverse else '正向'})"
             )
-            self._warn_prefix_conflict(config)
 
         self.renderer.enabled = any_text2image
 
@@ -250,8 +246,6 @@ class MinecraftQueQiaoPlugin(Star):
     # 匹配）。键名与 ServerConfig 属性一一对应；消息转发字段在 conf 里位于
     # message 子对象，Web API 侧先展平再交给本方法。
     SOFT_CONFIG_KEYS = (
-        "enable_ai_chat",
-        "ai_chat_prefix",
         "enable_local_translation",
         "forward_chat_to_astrbot",
         "forward_chat_format",
@@ -276,7 +270,6 @@ class MinecraftQueQiaoPlugin(Star):
     )
     # 布尔型软配置键 → (解析失败时的兜底默认值)，与 _conf_schema.json 默认一致
     _SOFT_BOOL_DEFAULTS = {
-        "enable_ai_chat": True,
         "enable_local_translation": False,
         "forward_chat_to_astrbot": True,
         "forward_join_leave_to_astrbot": False,
@@ -352,7 +345,6 @@ class MinecraftQueQiaoPlugin(Star):
             applied = True
         if not applied:
             return False
-        self._warn_prefix_conflict(config)
         changed = [key for key in self.SOFT_CONFIG_KEYS if key in fields]
         logger.info(
             f"[{PLUGIN_NAME}][{config.server_name}] 面板更新开关（免重载）: "
@@ -489,17 +481,6 @@ class MinecraftQueQiaoPlugin(Star):
             bool(_to_str(entry.get("base_url"), "").strip())
             and not _to_str(entry.get("upload_url"), "").strip()
         )
-
-    @staticmethod
-    def _warn_prefix_conflict(config: ServerConfig) -> None:
-        """两个前缀互相包含时告警，提示用户在配置中改开。"""
-        if config.prefixes_conflict:
-            logger.warning(
-                f"[{PLUGIN_NAME}][{config.server_name}] 互通前缀 "
-                f"`{config.auto_forward_prefix}` 与 AI 前缀 "
-                f"`{config.ai_chat_prefix}` 相互包含，消息归属可能产生歧义，"
-                f"建议改为互不相同的两个前缀"
-            )
 
     async def _notify_duplicate_server(self, config: ServerConfig) -> None:
         """server_name 重复被忽略时，把告警发到该配置的目标会话。
@@ -693,7 +674,7 @@ class MinecraftQueQiaoPlugin(Star):
     # ---- MC 事件处理 ----
 
     async def _on_queqiao_event(self, server_name: str, event: QueQiaoEvent) -> None:
-        """处理来自鹊桥的事件：转发到会话，并识别 AI 聊天触发。"""
+        """处理来自鹊桥的事件：记录指标与终端日志后转发到目标会话。"""
         config = self._configs.get(server_name)
         if config is None:
             return
@@ -799,106 +780,8 @@ class MinecraftQueQiaoPlugin(Star):
                 f"执行指令: {event.command}"
             )
 
-        # AI 与互通互斥：命中 AI 前缀即交给 LLM，不再转发到会话
-        question = self._resolve_ai_question(config, event)
-        if question is not None:
-            await self._handle_ai_chat(server_name, config, event, question)
-            return
-
         if await self.message_bridge.forward_event(server_name, config, event):
             self.metrics.record_relay_to_ast(server_name)
-
-    @staticmethod
-    def _match_ai_prefix(config: ServerConfig, event: QueQiaoEvent) -> bool:
-        """判断游戏内聊天是否触发 AI。
-
-        AI 前缀为空时**不**触发：否则所有聊天都会被投给 LLM，
-        既产生噪声也消耗额度。需全部触发请显式设置较短前缀。
-
-        采用词边界感知匹配，避免短前缀误伤同词头发言（如 `ai` 误匹配 `aim`）。
-        """
-        return prefix_matches(config.ai_chat_prefix, event.message)
-
-    @staticmethod
-    def _strip_ai_prefix(config: ServerConfig, text: str) -> str:
-        return strip_prefix(config.ai_chat_prefix, text)
-
-    @staticmethod
-    def _resolve_ai_question(config: ServerConfig, event: QueQiaoEvent) -> str | None:
-        """解析 AI 提问内容；不构成 AI 请求时返回 None。
-
-        仅由**游戏内聊天**触发（`PlayerChatEvent` 命中 `ai_chat_prefix`）。
-        """
-        if not config.enable_ai_chat or not event.is_chat:
-            return None
-
-        if not prefix_matches(config.ai_chat_prefix, event.message):
-            return None
-
-        question = strip_prefix(config.ai_chat_prefix, event.message)
-        return question or None
-
-    async def _handle_ai_chat(
-        self, server_name: str, config: ServerConfig, event: QueQiaoEvent, question: str
-    ) -> None:
-        """把游戏内 AI 提问交给 LLM，并把回复私聊回玩家。
-
-        使用 AstrBot 的 LLM 调用链：优先走会话默认人格，失败则提示玩家。
-        """
-        player = event.player
-        logger.info(
-            f"[{PLUGIN_NAME}][{server_name}] AI 提问来自 {player.display_name}: {question}"
-        )
-
-        reply = await self._ask_llm(event, question)
-        self.metrics.record_ai_chat(
-            server_name, player.display_name, question, bool(reply)
-        )
-        if not reply:
-            return
-
-        instance = self.server_manager.get(server_name)
-        if instance is None:
-            return
-
-        # 私聊回复：多人同时提问不会互相串台；uuid 缺失时退化为昵称
-        try:
-            sent = await instance.client.send_private_message(
-                reply, uuid_str=player.uuid, nickname=player.nickname
-            )
-        except QueQiaoTimeout:
-            # 超时 = 结果未知：WS 发送已成功，私聊大概率已送达游戏内。
-            # 此时若再广播一遍，玩家会收到两份回复（实测发生过），因此不重发
-            logger.warning(
-                f"[{PLUGIN_NAME}][{server_name}] 私聊回复响应超时"
-                "（消息可能已送达游戏内，不重复发送）"
-            )
-            return
-        if not sent:
-            # 仅「确定失败」（未连接 / 鹊桥明确报错）才改用广播
-            logger.warning(
-                f"[{PLUGIN_NAME}][{server_name}] 私聊回复失败，改用广播"
-            )
-            await instance.client.broadcast(
-                f"@{player.display_name} {reply}", config.broadcast_color
-            )
-
-    async def _ask_llm(self, event: QueQiaoEvent, question: str) -> str:
-        """调用 AstrBot LLM，返回纯文本回复；不可用时返回空串。
-
-        使用 `get_using_provider` + `text_chat`，与 AstrBot 4.x 的 provider 接口一致。
-        """
-        try:
-            provider = self.context.get_using_provider(umo=None)
-            if provider is None:
-                logger.warning(f"[{PLUGIN_NAME}] 未找到可用的 LLM 提供商")
-                return ""
-
-            response = await provider.text_chat(prompt=question)
-            return (getattr(response, "completion_text", "") or "").strip()
-        except Exception as exc:
-            logger.error(f"[{PLUGIN_NAME}] LLM 调用失败: {exc}")
-            return ""
 
     # ---- 命令组 ----
 

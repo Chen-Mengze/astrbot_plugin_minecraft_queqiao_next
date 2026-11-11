@@ -1,7 +1,7 @@
 """运行指标统计器与 SSE 事件流发布机制。
 
 负责：
-1. 收集插件运行期间的各种计数（事件量、转发量、AI 问答、回声抑制、指令执行分布）。
+1. 收集插件运行期间的各种计数（事件量、转发量、回声抑制、指令执行分布）。
 2. 维护最近事件的内存环形队列（Ring Buffer），供 Web 前端拉取事件历史。
 3. 提供 SSE（Server-Sent Events）订阅/发布（Pub/Sub）机制，向已连接的前端实时推送事件。
 """
@@ -60,9 +60,6 @@ class MetricsCollector:
         self.relayed_to_ast_total = 0
         self.relayed_to_mc_total = 0
         self.echo_suppressed_total = 0
-        self.ai_chat_total = 0
-        self.ai_chat_success_total = 0
-        self.ai_chat_failed_total = 0
 
         self.cmd_executed_by_channel: dict[str, int] = {
             "queqiao": 0,
@@ -74,7 +71,7 @@ class MetricsCollector:
 
         # 按服务器维度的事件计数，供仪表盘「单服务器标签页」展示各自互通事件数。
         # _events_by_server 只统计 events_by_type 内的事件（chat/join/relay 等，
-        # 与全局口径一致，不含 echo/ai 等辅助事件），_relay_to_mc_by_server 单独
+        # 与全局口径一致，不含 echo 等辅助事件），_relay_to_mc_by_server 单独
         # 统计「群/外部 → 游戏」的转发量，两者合并才是该服务器的「累计互通事件」。
         self._events_by_server: dict[str, int] = {}
         self._relay_to_mc_by_server: dict[str, int] = {}
@@ -128,26 +125,6 @@ class MetricsCollector:
             server_name,
             f"已拦截回声: {content[:40]}...",
             {"content": content},
-        )
-
-    def record_ai_chat(
-        self,
-        server_name: str,
-        player_name: str,
-        question: str,
-        success: bool,
-    ) -> None:
-        self.ai_chat_total += 1
-        if success:
-            self.ai_chat_success_total += 1
-        else:
-            self.ai_chat_failed_total += 1
-
-        self.record_event(
-            "ai",
-            server_name,
-            f"[{player_name}] AI提问: {question[:30]}",
-            {"player": player_name, "question": question, "success": success},
         )
 
     def record_command_execution(
@@ -226,9 +203,6 @@ class MetricsCollector:
             "relayed_to_ast_total": self.relayed_to_ast_total,
             "relayed_to_mc_total": self.relayed_to_mc_total,
             "echo_suppressed_total": self.echo_suppressed_total,
-            "ai_chat_total": self.ai_chat_total,
-            "ai_chat_success_total": self.ai_chat_success_total,
-            "ai_chat_failed_total": self.ai_chat_failed_total,
             "cmd_executed_by_channel": dict(self.cmd_executed_by_channel),
             "images_relayed_total": self.images_relayed_total,
             "active_sse_subscribers": len(self._subscribers),

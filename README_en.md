@@ -1,8 +1,8 @@
 <div align="center">
 <h1>Minecraft Queqiao</h1>
-<p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging, server management and AI chat</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.8.0-blue"></p>
-<p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; AI Chat</sub></p>
+<p><strong>Connect Minecraft servers to AstrBot via the QueQiao mod for message and image bridging and server management</strong></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.9.0-blue"></p>
+<p><sub>Minecraft &nbsp;&nbsp; QueQiao &nbsp;&nbsp; Message Bridge &nbsp;&nbsp; Image Bridge &nbsp;&nbsp; Group Bridge</sub></p>
 <p><a href="README.md">中文</a> &nbsp;/&nbsp; <strong>English</strong></p>
 </div>
 
@@ -18,7 +18,6 @@ Connects Minecraft servers to AstrBot through the [QueQiao](https://github.com/1
 - **Web Dashboard**: view server status, performance monitoring (TPS / latency), the bridge terminal in real time and connection observability (reconnect count / phase / limit alert, API timeout count), with quick broadcast and command console
 - **Image-bed panel**: a dedicated “🖼️ 图床” tab at the right end of the dashboard's server-tab bar to manage image transfer directly — the master switch, upload timeout, full add/edit/delete and reordering of image bed entries, the built-in HTTP service runtime state, and a one-click test upload that runs the whole chain with built-in probe images and colour-codes the result (green / yellow / red) by ChatImage compatibility
 - **Manage servers from the panel**: create servers, enable / disable, edit connection settings and target sessions, or delete entries right from the dashboard; disabled servers stay visible as grey cards and can be enabled with one click — saving backs up the config and hot-reloads automatically
-- **AI chat**: talk to the AI in-game with the `ai` prefix; replies are sent privately to the player
 - **Multiple servers**: connect several servers, each with independent forwarding settings
 - **Flexible transport**: forward mode (plugin dials QueQiao) or reverse mode (QueQiao dials plugin, ideal for rented servers)
 
@@ -86,7 +85,6 @@ Every save is **partial-effect** (only the image-transfer subsystem is rebuilt; 
 
 Below the server cards and the performance-monitoring panel, the dashboard has a collapsible “⚙ 功能设置” (feature settings) panel that groups everything **not** monitoring-related; its collapsed state is remembered by the backend (and the panel is hidden in the “全部服务器” all-servers view):
 
-- **AI chat** (per server): turn in-game AI chat on / off and set its trigger prefix. A chat message starting with the prefix goes to the AI only — the reply is sent to that player as a private message and the message is not forwarded to the group; an empty prefix disables AI triggering and leaves normal chat untouched. Saving writes the plugin config and takes effect immediately without rebuilding connections, so it is the same setting as `enable_ai_chat` / `ai_chat_prefix` in the WebUI
 - **Message forwarding** (per server): toggles for chat / join-leave / death / achievement forwarding, the chat message format (`{player}` `{message}` `{display_name}` placeholders), the group→MC trigger prefix (empty = forward everything) and the target sessions (one UMO per line). These are the same settings as in the “Message-forwarding configuration” table; saving takes effect immediately without rebuilding connections
 - **Connection notification** (per server): send a notice to the target sessions when the server connects or fails to connect, with independent switches for the two cases and templates supporting the `{display_name}` `{server_name}` placeholders; the failure notice only fires once the outage outlasts the disconnect quiet period, and only for the first failure of that outage. The same settings as in the “Server-connection notification” table; saving takes effect immediately without rebuilding connections
 - **Terminal window** (per server): how many days of interop-terminal logs to load (0–30, default 2 = today plus yesterday, 0 = keep all shards). Stored at the top level of the config entry — the same setting as `terminal_days` in the WebUI; saving takes effect immediately without rebuilding connections
@@ -276,27 +274,6 @@ Example: `display_name` = `生存服`, format `[{display_name}] <{player}> {mess
 
 > Join/quit pushes, `mc status` and `mc list` titles use the same chain (`display_name` → `display_name_default` → `server_name`); the handshake and logs keep using `server_name`.
 
-### AI chat
-
-<details>
-<summary>Show options</summary>
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enable_ai_chat` | bool | `true` | Master switch for in-game AI chat |
-| `ai_chat_prefix` | string | `ai` | Trigger prefix: in-game chat like `ai hello` goes to the AI, replied privately; empty disables the trigger |
-
-The two prefixes act in different directions and are configured independently; a given message matches only one of them:
-
-| Prefix | Direction | Effect |
-|--------|-----------|--------|
-| `auto_forward_prefix` | group → MC | Group messages starting with it are relayed into the game |
-| `ai_chat_prefix` | in-game → AI | In-game chat starting with it triggers the AI and is **not** relayed to the group |
-
-> Matching does word-boundary checks: a prefix ending in a letter/digit must be followed by a space or the end of the message, so `ai` will not misfire on `aim`/`airport`; letter matching is case-insensitive. Do not let the two prefixes contain one another, or a message's routing becomes ambiguous (a startup warning is logged). Leaving `ai_chat_prefix` empty does **not** make every message trigger the AI.
-
-</details>
-
 ### Commands
 
 <details>
@@ -353,10 +330,10 @@ TPS and latency monitoring are **enabled by default, zero-config**: a background
 | Enable switch | `on` | Stops sampling when off |
 | Sample interval | `60` s | Minimum `10` s |
 | Retention | `7` days | Older samples pruned automatically |
-| TPS command | `auto` | Auto-picks by server type (Forge → `forge tps`; NeoForge → `neoforge tps`, falling back to `forge tps`; Fabric/Quilt → `spark tps`; Paper/Spigot → `tps`). If the type cannot be identified, common commands are tried in order and the first working one is remembered; it may also be pinned manually |
+| TPS command | `auto` | Auto-picks by server type (Forge → `forge tps`; NeoForge → `neoforge tps`, falling back to `forge tps`; Fabric/Quilt → `spark tps`; Paper/Spigot → `tps`). If the type cannot be identified, common commands are tried in order and the first working one is remembered; it may also be pinned manually. Over QueQiao RCON, Forge/NeoForge are queried per overworld dimension (single-line output) so the full multi-dimension output cannot be truncated |
 | Latency domain | empty | Public address of the MC server (may include a port, e.g. `mc.example.com:25565`) for player-perspective latency; empty disables latency probing |
 
-- **TPS**: parsed from a TPS command executed over RCON — the server must support the command (Vanilla reports it as unavailable); Forge/NeoForge output a single average TPS, so the panel shows one value (Bukkit forks / Spark still show the 1m/5m/15m windows)
+- **TPS**: parsed from a TPS command executed over RCON — the server must support the command (Vanilla reports it as unavailable); Forge/NeoForge output a single average TPS, so the panel shows one value (Bukkit forks / Spark still show the 1m/5m/15m windows). Long RCON replies are read in full, so they are never truncated or mixed into the next query
 - **Latency**: direct-connect Minecraft SLP ping (no QueQiao relay, no RCON) — a public probe address must be filled in Settings; servers with SLP disabled or unreachable addresses report latency as unavailable
 - Samples are stored per-day under `data_dir/monitor/` and survive restarts; `/mc status` also shows the latest samples
 
@@ -431,7 +408,7 @@ subscribe_event:             # enable the events you need
 - Python 3.10+
 - AstrBot >= 4.10.4
 - `websockets` (required to connect to QueQiao)
-- `aio-mc-rcon` (only needed for the direct RCON fallback)
+- The direct RCON fallback is built in; no extra third-party library is needed
 
 ### FAQ
 
@@ -448,8 +425,6 @@ subscribe_event:             # enable the events you need
 **Q: Achievement messages only show "🏆 达成成就"?** Achievement text varies by QueQiao version and server type; the plugin falls back through `translation.text → text → display.title → key`. For localized names, enable translation on the QueQiao side (`enable_translation: true` + `translate/zh_cn.json`) — it is not a plugin setting.
 
 **Q: My rented server cannot open a port.** Set `ws_mode` to `reverse`: the plugin listens and waits for QueQiao to connect; point QueQiao's `websocket_client.url_list` at the plugin.
-
-**Q: How do I let in-game chat both reach the AI and sync to the group?** Set both prefixes, e.g. `*` for bridging and `ai` for the AI. Take care not to let one prefix contain the other.
 
 ### Independently Maintained
 

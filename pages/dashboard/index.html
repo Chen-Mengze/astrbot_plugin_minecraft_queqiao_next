@@ -163,9 +163,10 @@
       </div>
     </section>
 
-    <!-- 功能设置面板（可折叠）：承载 AI 对话开关与互通终端天数。自动刷新间隔
-         已迁至右上角「⚙ 设置」弹窗（全局偏好）；监控参数仍只在「⚙ 性能监控
-         设置」弹窗里维护，三边职责互不重叠。全局视图下本面板整体隐藏 -->
+    <!-- 功能设置面板（可折叠）：承载消息转发、连接通知、互通终端天数等
+         每台服务器独立的设置。自动刷新间隔已迁至右上角「⚙ 设置」弹窗
+         （全局偏好）；监控参数仍只在「⚙ 性能监控设置」弹窗里维护，
+         三边职责互不重叠。全局视图下本面板整体隐藏 -->
     <section class="settings-panel collapsed" id="settings-panel">
       <div class="settings-header">
         <button class="settings-toggle" id="settings-toggle" type="button"
@@ -178,25 +179,6 @@
         <span class="settings-status" id="settings-status"></span>
       </div>
       <div class="settings-body" id="settings-body">
-        <div class="settings-group" id="settings-group-ai">
-          <div class="settings-group-head">
-            <span class="settings-group-title">🤖 AI 对话</span>
-          </div>
-          <label class="settings-row">
-            <span class="settings-row-label">启用 AI 对话</span>
-            <span class="settings-row-control">
-              <input type="checkbox" id="st-ai-enabled" />
-            </span>
-            <span class="settings-row-hint">游戏内聊天以 AI 前缀开头时与 AI 对话，回复以私聊发给该玩家；不影响群服互通转发</span>
-          </label>
-          <label class="settings-row">
-            <span class="settings-row-label">AI 触发前缀</span>
-            <span class="settings-row-control">
-              <input type="text" id="st-ai-prefix" placeholder="ai" autocomplete="off" spellcheck="false" />
-            </span>
-            <span class="settings-row-hint">命中该前缀的消息只走 AI，不再转发到群（如填 ai，游戏内发「ai 你好」即触发）；留空 = 不触发 AI，普通聊天不受影响。与「自动转发前缀」互相包含会在启动时告警</span>
-          </label>
-        </div>
         <div class="settings-group" id="settings-group-forward">
           <div class="settings-group-head">
             <span class="settings-group-title">📡 消息转发</span>
@@ -276,7 +258,7 @@
             <span class="settings-row-control">
               <input type="text" id="st-fwd-prefix" placeholder="留空 = 全部转发" autocomplete="off" spellcheck="false" />
             </span>
-            <span class="settings-row-hint">外部消息以此开头才转发进游戏；留空 = 全部转发。与「AI 触发前缀」互相包含会在启动时告警</span>
+            <span class="settings-row-hint">外部消息以此开头才转发进游戏；留空 = 全部转发</span>
           </label>
           <label class="settings-row">
             <span class="settings-row-label">目标会话（每行一个）</span>

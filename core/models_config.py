@@ -205,8 +205,6 @@ class ServerConfig:
     low_frequency_interval: int = DEFAULT_LOW_FREQUENCY_INTERVAL
 
     # ---- 功能开关 ----
-    enable_ai_chat: bool = True
-    ai_chat_prefix: str = "ai"
     text2image: bool = True
     # 互通终端加载最近几天的日志分片（0=全部保留分片），每台服务器独立
     terminal_days: int = DEFAULT_TERMINAL_DAYS
@@ -395,24 +393,6 @@ class ServerConfig:
         return self.ws_mode == WS_MODE_REVERSE
 
     @property
-    def prefixes_conflict(self) -> bool:
-        """互通前缀与 AI 前缀是否冲突（互相包含即视为冲突）。
-
-        两个前缀作用在不同方向，但都必须能唯一判定消息归属：
-        - 群→MC 的互通前缀：外部会话消息以此开头才转发到游戏
-        - AI 前缀：游戏内聊天以此开头才触发 AI
-
-        若两者互相包含（例如同为 `*`，或一个是另一个的前缀），
-        同一条游戏内消息可能同时命中两个语义，因此在读取时告警。
-        """
-        if not self.auto_forward_prefix or not self.ai_chat_prefix:
-            return False
-        return (
-            self.auto_forward_prefix.startswith(self.ai_chat_prefix)
-            or self.ai_chat_prefix.startswith(self.auto_forward_prefix)
-        )
-
-    @property
     def normalized_path(self) -> str:
         """反向监听路径，确保以 / 开头。"""
         path = self.reverse_path or DEFAULT_REVERSE_PATH
@@ -528,8 +508,6 @@ class ServerConfig:
                     DEFAULT_LOW_FREQUENCY_INTERVAL,
                 ),
             ),
-            enable_ai_chat=_to_bool(data.get("enable_ai_chat"), True),
-            ai_chat_prefix=_to_str(data.get("ai_chat_prefix"), "ai"),
             text2image=_to_bool(data.get("text2image"), True),
             terminal_days=_to_int_clamped(
                 data.get("terminal_days"), DEFAULT_TERMINAL_DAYS, 0, 30

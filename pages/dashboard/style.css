@@ -997,7 +997,7 @@ body {
    -------------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------
-   10b. 功能设置面板（可折叠）：AI 对话开关 + 面板偏好
+   10b. 功能设置面板（可折叠）：消息转发 / 连接通知 / 面板偏好
    -------------------------------------------------------------------------- */
 
 .settings-panel {
@@ -1231,16 +1231,6 @@ body {
   margin: 0;
   accent-color: var(--mc-green);
   cursor: pointer;
-}
-
-/* 全局视图（无目标服务器）下 AI 组置灰只读：开关是每台服务器独立配置 */
-.settings-group.disabled .settings-row-control input {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.settings-group.disabled .settings-group-note {
-  color: var(--warning-color, #e6a23c);
 }
 
 @media (max-width: 480px) {

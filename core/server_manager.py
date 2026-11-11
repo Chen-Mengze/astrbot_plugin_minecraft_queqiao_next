@@ -5,11 +5,11 @@ import time
 
 from astrbot.api import logger
 
-from .constants import PLUGIN_NAME
+from .constants import PLUGIN_NAME, strip_format_codes
 from .models import PlayerListResult, ServerStatus
 from .models_config import ServerConfig
 from .queqiao_client import QueQiaoClient, QueQiaoTimeout
-from .rcon_client import RconClient
+from .rcon_client import RconClient, looks_like_tps_output
 
 
 class ServerInstance:
@@ -84,6 +84,11 @@ class ServerInstance:
         )
         self.rcon = RconClient(config)
         self._task: asyncio.Task | None = None
+        # 同一台服务器的 RCON 指令串行锁：RCON 是单连接请求-响应协议，
+        # 玩家列表查询（list）与 TPS 采样（tps/forge tps）并发下发时，
+        # 回包可能与请求错位（长输出拆包时尤其明显），表现为偶发解析不了
+        # TPS，或把 TPS 文本当成玩家名。串行化后同一时刻只有一条指令在途。
+        self._command_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
@@ -157,6 +162,9 @@ class ServerInstance:
     ) -> tuple[str | None, str]:
         """执行服务器指令，返回 ``(output, channel)``；两条通道都失败返回 ``(None, "")``。
 
+        同一台服务器的指令在这里串行执行（见 ``_command_lock``），避免
+        list / tps 并发下发导致 RCON 回包与请求错位。
+
         鹊桥超时 = 结果未知（指令可能已执行），此时**不走** RCON 兜底，
         避免同一条指令被执行两遍；仅确定失败（未连接 / 明确报错）才兜底。
 
@@ -165,6 +173,13 @@ class ServerInstance:
         - ``"direct"``：鹊桥通道不可用时回退到直连 RCON 执行成功
         - ``""``：未执行（未连接且未配直连 RCON）/ 鹊桥超时 / 全失败
         """
+        async with self._command_lock:
+            return await self._execute_command_locked(command)
+
+    async def _execute_command_locked(
+        self, command: str
+    ) -> tuple[str | None, str]:
+        """``execute_command_with_channel`` 的实现（调用方已持有指令串行锁）。"""
         # 已确认鹊桥 RCON 不可用（False）时跳过鹊桥通道，不再重复探测：
         # 否则仪表盘每次刷新都会向未开启 RCON 的鹊桥端发 send_rcon_command，
         # 在 MC 控制台刷报错。该结论在**本次连接内**保持，重连后过期
@@ -210,6 +225,11 @@ class ServerInstance:
         3. sample 为空时退回 ``online``/``max`` 人数
         4. 都失败 → ``source="none"``
 
+        **只认标准 list 回包**：RCON 响应串扰/截断时可能读到 TPS 等其它
+        指令的输出，不能把其中文本当玩家名（否则玩家列表会显示成整段 TPS
+        文本）。识别不到标准回包时降级到在线查询；若输出明显是 TPS 文本，
+        说明回包与请求错位，只读的 ``list`` 查询重试一次以重新对齐。
+
         ``status_model`` 可选：调用方（如 ``/servers`` 聚合接口）已拉取过
         状态时传入复用，避免同一轮请求对鹊桥重复发 ``get_status``。
 
@@ -241,14 +261,41 @@ class ServerInstance:
             or not self.client.connected
         ):
             output, channel = await self.execute_command_with_channel("list")
+        parsed_names: list[str] | None = None
         if output is not None:
             parsed_names = RconClient.parse_player_list(output)
+            # 串扰自愈：list 读到 TPS 文本，说明上一条长回包拆包后错位；
+            # list 是只读查询，重试一次可让回包重新对齐（不会产生副作用）
+            if parsed_names is None and looks_like_tps_output(output):
+                logger.warning(
+                    f"[{PLUGIN_NAME}][{self.server_name}] RCON 的 list 回包疑似"
+                    "串扰（内容是 TPS 文本），重试一次以重新对齐响应"
+                )
+                retry_output, retry_channel = await self.execute_command_with_channel("list")
+                if retry_output is not None:
+                    retried_names = RconClient.parse_player_list(retry_output)
+                    if retried_names is not None:
+                        output, channel, parsed_names = (
+                            retry_output,
+                            retry_channel,
+                            retried_names,
+                        )
+        if parsed_names is not None:
             self.online_players = set(parsed_names)
             return PlayerListResult(
                 names=parsed_names,
                 source="rcon",
                 rcon_channel=channel,
             )
+        if output is not None:
+            logger.warning(
+                f"[{PLUGIN_NAME}][{self.server_name}] RCON 的 list 回包无法识别"
+                f"（可能被截断或串扰），降级到在线查询: "
+                f"{strip_format_codes(output)[:80]!r}"
+            )
+            if channel == "direct":
+                # 直连通道响应已错位：断开重连，下一轮从干净连接开始
+                await self.rcon.close()
 
         # ② 鹊桥 get_status 的 SLP sample（免 RCON）；复用调用方已拉取的状态
         if status_model is None:

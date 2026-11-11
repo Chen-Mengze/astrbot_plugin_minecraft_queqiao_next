@@ -1,8 +1,8 @@
 <div align="center">
 <h1>Minecraft 鹊桥互通</h1>
-<p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通、服务器管理与 AI 聊天</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.8.0-blue"></p>
-<p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; AI聊天</sub></p>
+<p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通与服务器管理</strong></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.9.0-blue"></p>
+<p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; 群服互通</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
 
@@ -19,7 +19,6 @@
 - **Web 仪表盘**：查看各服务器状态、性能监控（TPS / 延迟）、互通终端实时日志与连接观测（重连次数 / 阶段 / 上限告警、API 超时计数），支持快捷广播与指令执行
 - **图床面板**：仪表盘顶部「🖼️ 图床」独立标签，直接管理图片转存——总开关、上传超时、图床条目增删改与顺序调整、内置 HTTP 服务运行态，内置探针图一键验证完整上传链并按 ChatImage 兼容性给出绿/黄/红三色结论
 - **面板直接管理服务器**：仪表盘里即可新建服务器、启用 / 停用、改连接信息与目标会话、删除条目；未启用的服务器以灰色卡片保留在面板上，点进去一键启用，保存自动备份并热重载生效
-- **AI 聊天**：游戏内以 `ai` 前缀发言即可与 AI 对话，回复私聊给玩家
 - **多服务器**：同时连接多台服务器，各自独立配置转发会话与开关
 - **灵活连接**：正向连接（插件连鹊桥）或反向连接（鹊桥连插件，适合租赁服）
 
@@ -87,7 +86,6 @@
 
 仪表盘在「服务器实例状态」与「性能监控」下方还有一个可折叠的「⚙ 功能设置」面板，把**不属于监控**的开关集中在这里（折叠状态由后端记住，换设备/刷新后保持；在「全部服务器」视图下自动隐藏）：
 
-- **AI 对话**（每台服务器独立）：启用 / 停用游戏内 AI 对话，以及触发前缀。前缀命中时该条聊天只走 AI、回复私聊给玩家，不再转发到群；留空 = 不触发 AI，普通聊天不受影响。保存后写入插件配置并即时生效（不重建连接），与 WebUI 里的 `enable_ai_chat` / `ai_chat_prefix` 是同一份配置
 - **消息转发**（每台服务器独立）：聊天 / 进出 / 死亡 / 成就转发开关、聊天消息格式（`{player}` `{message}` `{display_name}` 占位符）、群 → MC 触发前缀（留空 = 全部转发）与目标会话（每行一个 UMO）。与「消息转发配置」配置表是同一份配置，保存后即时生效（不重建连接）
 - **连接通知**（每台服务器独立）：服务器连通 / 连接失败后向目标会话发送通知，分别独立开关，通知文案格式均可用 `{display_name}` `{server_name}` 占位符；失败通知需断线持续超过「断连静默期」才发（期间连回不打扰），同一轮故障只发第一条。与「服务器连通通知」配置表是同一份配置，保存后即时生效（不重建连接）
 - **互通终端**（每台服务器独立）：终端日志加载天数（0～30，默认 2 = 今天 + 昨天，0 = 全部保留分片）。保存在插件配置条目顶层（与 WebUI 里的 `terminal_days` 是同一份配置），保存后即时生效（不重建连接）
@@ -275,27 +273,6 @@
 
 > 进出消息、`mc status` / `mc list` 标题沿用同一条取值链（`display_name` → `display_name_default` → `server_name`）；连接握手与日志仍使用 `server_name`。
 
-### AI 聊天配置
-
-<details>
-<summary>展开配置表</summary>
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `enable_ai_chat` | bool | `true` | 启用游戏内 AI 对话（总开关） |
-| `ai_chat_prefix` | string | `ai` | 触发前缀：游戏内以 `ai 你好` 发言即触发 AI，回复私聊给玩家；留空 = 不触发 |
-
-两个前缀作用方向不同、互相独立，一条消息只会命中其中一个：
-
-| 前缀 | 方向 | 作用 |
-|------|------|------|
-| `auto_forward_prefix` | 群 → MC | 群消息以此开头才转发到游戏 |
-| `ai_chat_prefix` | 游戏内 → AI | 游戏内聊天以此开头才触发 AI，不再转发到群 |
-
-> 前缀匹配做词边界判断：以字母/数字结尾的前缀要求后跟空格或直接结束，`ai` 不会误伤 `aim`、`airport`；字母不区分大小写。两个前缀**不要相互包含**，否则同一条消息的归属会产生歧义（启动时会告警）。`ai_chat_prefix` 留空不会导致所有聊天触发 AI。
-
-</details>
-
 ### 指令配置
 
 <details>
@@ -352,10 +329,10 @@ TPS 与延迟监控**默认开启、无需配置**：后台定期采集并持久
 | 启用开关 | `on` | 关闭后停止采样 |
 | 采集间隔 | `60` 秒 | 最小 `10` 秒 |
 | 保留天数 | `7` 天 | 超期自动清理 |
-| TPS 指令 | `auto` | 自动按服务端类型选择（Forge → `forge tps`；NeoForge → `neoforge tps`（未命中再试 `forge tps`）；Fabric/Quilt → `spark tps`；Paper/Spigot 等 → `tps`）。识别不到时自动依次尝试常用指令，成功后记住该服务器可用的那条；也可手动指定 |
+| TPS 指令 | `auto` | 自动按服务端类型选择（Forge → `forge tps`；NeoForge → `neoforge tps`（未命中再试 `forge tps`）；Fabric/Quilt → `spark tps`；Paper/Spigot 等 → `tps`）。识别不到时自动依次尝试常用指令，成功后记住该服务器可用的那条；也可手动指定。经鹊桥 RCON 时 Forge/NeoForge 按主世界维度查询（输出单行），避免多维度完整输出被截断 |
 | 延迟探测域名 | 留空 | 直连服务器的公网地址（可含端口，如 `mc.example.com:25565`），用于测玩家视角延迟；留空不采集延迟 |
 
-- **TPS**：经 RCON 执行 TPS 指令解析，需服务端支持对应指令（原版端不支持，显示为不可用）；Forge/NeoForge 只输出单个平均 TPS，面板显示单个值（Bukkit 系 / Spark 仍显示 1m/5m/15m 三档）
+- **TPS**：经 RCON 执行 TPS 指令解析，需服务端支持对应指令（原版端不支持，显示为不可用）；Forge/NeoForge 只输出单个平均 TPS，面板显示单个值（Bukkit 系 / Spark 仍显示 1m/5m/15m 三档）。RCON 长回包会被完整读取，不会截断或串到下一条查询
 - **延迟**：直连服务器做 Minecraft SLP ping（不经鹊桥中转、无需 RCON），须在设置中填写公网探测地址；服务器关闭 SLP 或地址不可达时延迟显示不可用
 - 采样按天分片存储于 `data_dir/monitor/`，重启不丢；`/mc status` 会附带最近采样值
 
@@ -430,7 +407,7 @@ subscribe_event:             # 按需开启事件订阅
 - Python 3.10+
 - AstrBot >= 4.10.4
 - `websockets`（连接鹊桥必需）
-- `aio-mc-rcon`（仅在启用直连 RCON 兜底时需要）
+- 直连 RCON 兜底由插件内置实现，无需额外第三方库
 
 ### 常见问题
 
@@ -461,10 +438,6 @@ subscribe_event:             # 按需开启事件订阅
 **Q：租赁服无法开放端口？**
 
 将 `ws_mode` 设为 `reverse`：插件监听端口等待鹊桥连入，并在鹊桥 `websocket_client.url_list` 填入插件地址。
-
-**Q：游戏内聊天想既能和 AI 说话、又能同步到群？**
-
-两个前缀各配一个即可（如互通前缀 `*`、AI 前缀 `ai`），注意不要让两者相互包含。
 
 ### 独立维护说明
 

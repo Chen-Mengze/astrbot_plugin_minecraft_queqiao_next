@@ -53,17 +53,21 @@ from ..core.constants import (
     MONITOR_REALTIME_MIN,
     MONITOR_TPS_RETRY_SECONDS,
     PLUGIN_NAME,
+    strip_format_codes,
 )
 from ..core.models_config import ServerConfig
+from ..core.rcon_client import looks_like_player_list
 from .slp_ping import brand_from_slp, brand_from_text, mc_ping
 
 if TYPE_CHECKING:
     from ..core.server_manager import ServerManager
 
 # TPS 标准输出：`TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0`
-# Paper/Spigot/spark 均含该行；前缀可能带颜色代码或其它装饰
+# Paper/Spigot/spark 均含该行；前缀可能带颜色代码或其它装饰。窗口列表可能
+# 更长（`1m, 5m, 15m, 1h, 6h, 24h`），值可能带 `*` 标记（spark 标注采样未满）
 _TPS_RE = re.compile(
-    r"TPS from last 1m, 5m, 15m:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)",
+    r"TPS\s+from\s+last\s+[^:\r\n]*:\s*([\d.]+)\*?\s*,\s*([\d.]+)\*?\s*,"
+    r"\s*([\d.]+)\*?",
     re.IGNORECASE,
 )
 # 兜底：无前缀的旧版输出（行内恰好三个逗号分隔的浮点数），但必须处于
@@ -78,8 +82,9 @@ _FORGE_OVERALL_RE = re.compile(
     r"Overall\s*:[^\r\n]*?Mean\s+TPS\s*:\s*([\d.]+)", re.IGNORECASE
 )
 _FORGE_TPS_RE = re.compile(r"Mean\s+TPS\s*:\s*([\d.]+)", re.IGNORECASE)
-# § 后跟一位格式/颜色代码：RCON 回传的输出可能带颜色码，匹配前先剥离
-_SECTION_RE = re.compile(r"§.")
+# 裸三数兜底只接受合理 TPS 区间：避免把玩家名/其它数字行误判为 TPS
+_TPS_VALUE_MIN = 0.0
+_TPS_VALUE_MAX = 20.5  # TPS 上限 20，留一点四舍五入余量
 # server_name 转安全文件名：仅保留字母数字、_、-、.，其余替换为 _
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
@@ -107,7 +112,9 @@ def parse_tps(
     """
     if not output:
         return None
-    text = _SECTION_RE.sub("", output).strip()
+    # 颜色码可能嵌在数字/关键字中间（RCON 回传带 § 或 ANSI），先统一剥离；
+    # 长输出被截断到行中间时，完整的前几行仍可正常解析（Forge 取首条维度行）
+    text = strip_format_codes(output).strip()
     matched = _TPS_RE.search(text)
     if matched:
         values = matched.groups()
@@ -119,7 +126,9 @@ def parse_tps(
     if "TPS" in text.upper():
         bare = _TPS_BARE_RE.search(text)
         if bare:
-            return tuple(float(group) for group in bare.groups())
+            values = tuple(float(group) for group in bare.groups())
+            if all(_TPS_VALUE_MIN <= value <= _TPS_VALUE_MAX for value in values):
+                return values
     return None
 
 
@@ -135,9 +144,21 @@ _AUTO_FALLBACK_COMMANDS = ("tps", "forge tps", "spark tps")
 # 品牌来源优先级：get_status（服务端自报，最权威）> TPS 指令实测 > SLP
 # 版本名/MOTD。高优先级可覆盖低优先级，反向不覆盖（MOTD 常混入其它品牌名）
 _BRAND_SOURCE_PRIORITY = {"status": 3, "command": 2, "slp": 1}
+# Forge/NeoForge 的 tps 指令支持 `dim <维度>` 子命令，只返回一行：
+# `forge tps dim minecraft:overworld` → `Dim minecraft:overworld (...): Mean TPS: 20.000`。
+# 完整 `forge tps` 会列出全部维度，大型整合包输出数 KB，超过单个 RCON
+# 响应包上限（4096 字节）后会被服务端拆包；经鹊桥 RCON 转发时读取能力由
+# 鹊桥模组决定（可能只取首包），长输出拆包会造成回包与请求错位。因此
+# 鹊桥通道优先改用单维度短输出形式，跑在插件内的直连 RCON 可完整拼接
+# 拆包响应，仍用完整指令以保留 Overall 均值。
+_FORGE_SHORT_COMMAND_ARGS = "dim minecraft:overworld"
+# 完整 Forge tps 指令（输出所有维度，长输出会被服务端拆包）
+_LONG_FORGE_COMMANDS = ("forge tps", "neoforge tps")
 
 
-def tps_command_candidates(server_type: str | None, preference: str) -> list[str]:
+def tps_command_candidates(
+    server_type: str | None, preference: str, short_output: bool = False
+) -> list[str]:
     """auto 模式下按服务端品牌给出候选 TPS 指令（按尝试顺序）。
 
     - NeoForge：``neoforge tps`` → ``forge tps``
@@ -145,6 +166,10 @@ def tps_command_candidates(server_type: str | None, preference: str) -> list[str
     - Fabric/Quilt：``spark tps``（无内置 tps 指令，须装 Spark 模组）
     - Paper/Spigot/Bukkit 等布克特系：``tps``
     - 未知/无缓存：从 ``tps`` 起步
+
+    ``short_output=True``（鹊桥 RCON 通道）时，Forge/NeoForge 候选先插入
+    ``dim <主世界>`` 短输出形式：单维度回包不会超过一个 RCON 包，避免长
+    输出拆包导致的响应错位（TPS 解析失败 / TPS 文本被当成玩家列表）。
 
     末尾统一追加通用兜底指令（去重）：采集侧执行到能解析出数值的指令为止，
     品牌识别错误时仍能采到 TPS。显式填写具体指令时只返回该指令，不做自动
@@ -155,9 +180,18 @@ def tps_command_candidates(server_type: str | None, preference: str) -> list[str
         return [pref]
     brand = brand_from_text(server_type) if server_type else None
     if brand == "neoforge":
-        first = ["neoforge tps", "forge tps"]
+        forge_commands = ["neoforge tps", "forge tps"]
     elif brand == "forge":
-        first = ["forge tps"]
+        forge_commands = ["forge tps"]
+    else:
+        forge_commands = []
+    if forge_commands:
+        first = list(forge_commands)
+        if short_output:
+            first = [
+                f"{command} {_FORGE_SHORT_COMMAND_ARGS}"
+                for command in forge_commands
+            ] + first
     elif brand in ("fabric", "quilt"):
         first = ["spark tps"]
     elif brand:
@@ -180,6 +214,8 @@ def brand_from_tps_command(command: str) -> str | None:
     均不足以反推具体品牌。
     """
     normalized = " ".join((command or "").lower().split())
+    if normalized.endswith(_FORGE_SHORT_COMMAND_ARGS):
+        normalized = normalized[: -len(_FORGE_SHORT_COMMAND_ARGS)].strip()
     if normalized == "neoforge tps":
         return "neoforge"
     if normalized == "forge tps":
@@ -976,6 +1012,46 @@ class MonitorCollector:
         else:
             self._errors.pop(name, None)
 
+    @staticmethod
+    def _queqiao_rcon_active(instance: Any) -> bool:
+        """本轮是否大概率走鹊桥 RCON 通道（决定是否优先用短输出 TPS 指令）。
+
+        指令通道是「鹊桥优先」：只要 WS 已连接且未被判定「鹊桥 RCON 不可用」，
+        指令就先发往鹊桥。鹊桥 RCON 对超长回包的拼接能力由鹊桥模组决定，
+        完整 `forge tps` 在多维度服务器上有数 KB 输出，可能被截断并遗留
+        未读包、造成回包与请求错位，因此该通道优先用单维度短输出指令；
+        直连通道由插件自己完整拼接拆包，继续用完整指令保留 Overall 均值。
+        """
+        client = getattr(instance, "client", None)
+        if client is None or not getattr(client, "connected", False):
+            return False
+        return getattr(instance, "queqiao_rcon_ok", None) is not False
+
+    async def _execute_tps_command(
+        self, name: str, instance: Any, command: str
+    ) -> tuple[tuple[float | None, float | None, float | None] | None, str | None]:
+        """执行一条 TPS 指令并解析，返回 (解析结果, 原始输出)。
+
+        原始输出为 None 表示通道执行失败（未连接/超时），调用方不再换指令重发。
+        解析失败但输出是玩家列表文本时，说明 RCON 回包与请求错位（上一条
+        长回包拆包/串扰）；TPS 是只读查询，重试同一指令一次可重新对齐。
+        """
+        output, _ = await instance.execute_command_with_channel(command)
+        if output is None:
+            return None, None
+        parsed = parse_tps(output)
+        if parsed is not None:
+            return parsed, output
+        if looks_like_player_list(output):
+            logger.warning(
+                f"[{PLUGIN_NAME}][{name}] TPS 指令回包疑似串扰"
+                f"（内容是玩家列表文本），重试一次: {command!r}"
+            )
+            retry_output, _ = await instance.execute_command_with_channel(command)
+            if retry_output is not None:
+                return parse_tps(retry_output), retry_output
+        return None, output
+
     async def _sample_tps(
         self, name: str, instance: Any, settings: MonitorSettings
     ) -> tuple[tuple[float | None, float | None, float | None] | None, str | None]:
@@ -985,28 +1061,37 @@ class MonitorCollector:
         成功的指令缓存到 _tps_commands，后续轮次优先复用，避免重复试错。
         **通道失败（超时/未连接）不换指令重发**——按「超时不等于失败」语义，
         换一条指令重发只会在服务器上多执行一条命令。
+
+        鹊桥 RCON 通道优先短输出候选（见 `_queqiao_rcon_active`）；缓存里
+        的完整 `forge tps`（长输出）在该通道不再优先复用，避免每轮采样都
+        触发服务端拆包、把未读包留给后续指令造成串扰。
         """
+        short_output = self._queqiao_rcon_active(instance)
         candidates = tps_command_candidates(
-            self._server_types.get(name), settings.tps_command
+            self._server_types.get(name),
+            settings.tps_command,
+            short_output=short_output,
         )
         cached = self._tps_commands.get(name)
         if cached and cached in candidates:
             candidates.remove(cached)
-            candidates.insert(0, cached)
+            if short_output and cached in _LONG_FORGE_COMMANDS:
+                candidates.append(cached)
+            else:
+                candidates.insert(0, cached)
         # 全部候选刚失败过：直接返回上次错误，避免每轮连发多条无效指令刷屏
         if time.monotonic() < self._tps_retry_after.get(name, 0.0):
             return None, self._errors.get(name) or "TPS 输出无法解析"
         tried: list[str] = []
         last_output: str | None = None
         for command in candidates:
-            output, _ = await instance.execute_command_with_channel(command)
             tried.append(command)
+            parsed, output = await self._execute_tps_command(name, instance, command)
             if output is None:
                 return None, (
                     f"TPS 不可用：{command!r} 执行失败"
                     "（需服务端支持该指令且 RCON 通道可用，或指令执行超时）"
                 )
-            parsed = parse_tps(output)
             if parsed is not None:
                 self._tps_commands[name] = command
                 self._tps_retry_after.pop(name, None)
@@ -1016,7 +1101,8 @@ class MonitorCollector:
         self._tps_retry_after[name] = time.monotonic() + MONITOR_TPS_RETRY_SECONDS
         attempted = "、".join(f"{command!r}" for command in tried)
         return None, (
-            f"TPS 输出无法解析（已尝试 {attempted}）：{last_output[:80]!r}"
+            f"TPS 输出无法解析（已尝试 {attempted}）："
+            f"{strip_format_codes(last_output or '')[:80]!r}"
             "——请在设置里显式填写该服务端的 TPS 指令"
         )
 
@@ -1144,7 +1230,13 @@ class MonitorCollector:
         latest = self.store.latest(name)
         server_type = self._server_types.get(name)
         ping_target = self._resolve_ping_target(name, settings)
-        candidates = tps_command_candidates(server_type, settings.tps_command)
+        instance = self.server_manager.get(name)
+        short_output = (
+            self._queqiao_rcon_active(instance) if instance is not None else False
+        )
+        candidates = tps_command_candidates(
+            server_type, settings.tps_command, short_output=short_output
+        )
         cached_command = self._tps_commands.get(name)
         return {
             "enabled": settings.enabled,

@@ -129,11 +129,15 @@ assert h.match_custom_command("S","tp 114") is None
 assert h.match_custom_command("S","unknown cmd") is None
 print("OK  多参数按位置替换，{sender} 保留给运行时，不匹配返回 None")
 
-print("=== 7. RCON list 解析 ===")
+print("=== 7. RCON list 解析（只认标准回包） ===")
 assert RconClient.parse_player_list("There are 2 of a max of 20 players online: Alice, Bob")==["Alice","Bob"]
 assert RconClient.parse_player_list("There are 0 of a max of 20 players online: ")==[]
-assert RconClient.parse_player_list(None)==[]
-print("OK")
+# 非 list 回包（如 RCON 串扰读到的 TPS 文本）不得解析成玩家名
+assert RconClient.parse_player_list("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0") is None
+assert RconClient.parse_player_list("Dim x (y): Mean tick time: 1.0 ms. Mean TPS: 20.000") is None
+assert RconClient.parse_player_list(None) is None
+assert RconClient.parse_player_list("") is None
+print("OK  标准 list 回包解析 / TPS 等其它输出不误判为玩家")
 
 print("=== 8. 回声抑制 + 转发判定 ===")
 class _Ctx:
@@ -154,7 +158,7 @@ assert br.servers_for_session("umo:GroupMessage:2") == [], "群号不同不应�
 assert br.should_relay(cfg,"*hello") is True
 assert br.should_relay(cfg,"no prefix") is False
 assert br.strip_relay_prefix(cfg,"*hello") == "hello"
-# 转发前缀留空 = 全部转发（与 AI 前缀「留空即不触发」语义相反，属刻意设计）
+# 转发前缀留空 = 全部转发（与通用「留空即不匹配」的前缀语义相反，属刻意设计）
 cfg_empty_prefix = ServerConfig.from_dict({"server":{"server_name":"S2"},
     "message":{"target_sessions":["umo:GroupMessage:1"]}})
 assert cfg_empty_prefix.auto_forward_prefix == ""
@@ -233,76 +237,47 @@ import astrbot_plugin_minecraft_queqiao_next.main as m
 assert hasattr(m, "MinecraftQueQiaoPlugin")
 print("OK  插件主类加载正常:", m.MinecraftQueQiaoPlugin.__name__)
 
-print("=== 13. 前缀语义：AI 与互通互斥 ===")
-from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as P
+print("=== 13. 消息前缀语义：仅群 → MC 自动转发前缀 ===")
 from astrbot_plugin_minecraft_queqiao_next.core.models_config import ServerConfig as SC
 
-# 默认配置：互通开、AI 开、两个前缀独立（转发前缀默认留空 = 全部转发，
-# 因为转发生效前必须先绑定 target_sessions，默认放开不会外溢到未绑定会话）
+# AI 聊天能力已移除：配置模型不再有 AI 字段 / 前缀冲突概念
 d = SC.from_dict({})
-assert d.enable_ai_chat is True and d.forward_chat_to_astrbot is True
-assert d.ai_chat_prefix == "ai" and d.auto_forward_prefix == ""
-assert d.prefixes_conflict is False, "默认前缀不应冲突"
+assert d.forward_chat_to_astrbot is True
+assert d.auto_forward_prefix == ""
+assert not hasattr(d, "enable_ai_chat") and not hasattr(d, "ai_chat_prefix")
+assert not hasattr(d, "prefixes_conflict")
 
-# 命中 AI 前缀 -> 走 AI，不转发
-cfg_ai = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":"ai"})
-chat_ai = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
-    "message":"ai 你好","player":{"nickname":"A"}})
-chat_bare = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
-    "message":"ai","player":{"nickname":"A"}})
-# 词边界：短前缀不应误伤同词头的正常发言
-chat_aim = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
-    "message":"aim 很高","player":{"nickname":"A"}})
-chat_airport = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
-    "message":"airport 到了","player":{"nickname":"A"}})
-chat_norm = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
-    "message":"大家好","player":{"nickname":"A"}})
-assert P._match_ai_prefix(cfg_ai, chat_ai) is True
-assert P._match_ai_prefix(cfg_ai, chat_bare) is True, "单独一个 ai 应触发"
-assert P._match_ai_prefix(cfg_ai, chat_aim) is False, "aim 不应误触发 AI"
-assert P._match_ai_prefix(cfg_ai, chat_airport) is False, "airport 不应误触发 AI"
-assert P._match_ai_prefix(cfg_ai, chat_norm) is False, "普通聊天不应触发 AI"
-# 字母前缀忽略大小写：AI / Ai / ai 等效
-assert P._match_ai_prefix(cfg_ai, QueQiaoEvent.from_dict(
-    {"event_name":"PlayerChatEvent","message":"AI 你好"})) is True
-assert P._strip_ai_prefix(cfg_ai, "ai 你好") == "你好"
-assert P._strip_ai_prefix(cfg_ai, "AI 你好") == "你好"
+# 自动转发前缀：以字母结尾要求词边界、字母忽略大小写、非字母数字结尾直接命中
+cfg_pref = SC.from_dict({"server":{"server_name":"S"},
+    "message":{"target_sessions":["umo:GroupMessage:1"],"auto_forward_prefix":"#ai"}})
+assert br.should_relay(cfg_pref, "#ai 你好") is True
+assert br.should_relay(cfg_pref, "#aihi") is False, "短前缀不得误伤同词头发言"
+assert br.should_relay(cfg_pref, "#AI 你好") is True, "纯字母前缀忽略大小写"
+assert br.strip_relay_prefix(cfg_pref, "#ai 你好") == "你好"
+cfg_bang = SC.from_dict({"server":{"server_name":"S"},
+    "message":{"auto_forward_prefix":"!"}})
+assert br.should_relay(cfg_bang, "!你好") is True, "非字母数字前缀无需分隔符"
+# 留空 = 全部转发
+cfg_empty = SC.from_dict({"server":{"server_name":"S"},
+    "message":{"target_sessions":["umo:GroupMessage:1"]}})
+assert br.should_relay(cfg_empty, "no prefix") is True
+print("OK  自动转发前缀词边界 / 大小写 / 特殊前缀 / 留空全部转发、AI 字段已移除")
 
-# 前缀以非字母数字结尾时（如 `!`）无需分隔符即可命中
-cfg_bang = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":"!"})
-assert P._match_ai_prefix(cfg_bang, QueQiaoEvent.from_dict(
-    {"event_name":"PlayerChatEvent","message":"!你好"})) is True
-# 以字母结尾的前缀（如 `#ai`）同样要求词边界
-cfg_hash = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":"#ai"})
-assert P._match_ai_prefix(cfg_hash, QueQiaoEvent.from_dict(
-    {"event_name":"PlayerChatEvent","message":"#aihi"})) is False
-assert P._match_ai_prefix(cfg_hash, QueQiaoEvent.from_dict(
-    {"event_name":"PlayerChatEvent","message":"#ai 你好"})) is True
-
-# AI 前缀留空 -> 不触发（避免全量投喂 LLM）
-cfg_empty = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":""})
-assert P._match_ai_prefix(cfg_empty, chat_norm) is False
-
-# 前缀冲突检测：互相包含即告警
-assert SC.from_dict({"ai_chat_prefix":"*","message":{"auto_forward_prefix":"*"}}).prefixes_conflict
-assert SC.from_dict({"ai_chat_prefix":"a","message":{"auto_forward_prefix":"ab"}}).prefixes_conflict
-assert SC.from_dict({"ai_chat_prefix":"#ai","message":{"auto_forward_prefix":"*"}}).prefixes_conflict is False
-print("OK  AI 前缀命中走 AI、普通聊天走互通、空前缀不触发、冲突可检测")
-
-print("=== 14. 端到端：同一条游戏内消息只走一条路径 ===")
+print("=== 14. 端到端：游戏内聊天转发到群（AI 分支已移除） ===")
 sent2 = []
 class _Ctx3:
     async def send_message(self, umo, chain):
         sent2.append(chain.chain[0].text); return True
+chat_norm = QueQiaoEvent.from_dict({"event_name":"PlayerChatEvent",
+    "message":"大家好","player":{"nickname":"A"}})
 import astrbot_plugin_minecraft_queqiao_next.services.message_bridge as mb_mod
 br3 = mb_mod.MessageBridge(_Ctx3())
-cfg3 = SC.from_dict({"server":{"server_name":"Srv2"},"ai_chat_prefix":"#ai",
+cfg3 = SC.from_dict({"server":{"server_name":"Srv2"},
     "message":{"target_sessions":["umo:GroupMessage:9"],"forward_chat_to_astrbot":True}})
 br3.register_server(cfg3)
 async def _run3():
     # 普通聊天 -> 应转发到群
     await br3.forward_event("Srv2", cfg3, chat_norm)
-    # AI 消息 -> 在 main 层就被拦截，不会到达 bridge
 asyncio.run(_run3())
 # 默认格式 [{display_name}]{player}: {message}：{display_name} 留空时取显示名称默认值 MC
 assert sent2 == ["[MC]A: 大家好"], sent2
@@ -311,41 +286,33 @@ print("OK  普通聊天转发到群:", sent2)
 print("\n全部离线逻辑校验通过 ✅（含前缀语义）")
 
 
-print("=== 15. AI 触发方式：仅聊天前缀 ===")
+print("=== 15. AI 聊天功能已彻底移除 ===")
+from astrbot_plugin_minecraft_queqiao_next.main import MinecraftQueQiaoPlugin as P
+
 d2 = SC.from_dict({})
-assert d2.enable_ai_chat is True and d2.ai_chat_prefix == "ai"
-# 相关配置项不应存在
-assert not hasattr(d2, "ai_command_enabled"), "不应残留 ai_command_enabled"
-assert not hasattr(d2, "ai_command_name"), "不应残留 ai_command_name"
-assert not hasattr(d2, "resolved_ai_command"), "不应残留 resolved_ai_command"
-# constants 不应导出 match_ai_command
+for _attr in ("enable_ai_chat", "ai_chat_prefix", "prefixes_conflict",
+              "ai_command_enabled", "ai_command_name", "resolved_ai_command"):
+    assert not hasattr(d2, _attr), f"ServerConfig 不应残留 {_attr}"
+for _name in ("_match_ai_prefix", "_strip_ai_prefix", "_resolve_ai_question",
+              "_handle_ai_chat", "_ask_llm", "_warn_prefix_conflict"):
+    assert not hasattr(P, _name), f"插件主类不应残留 {_name}"
+# constants 不应导出旧 AI 触发辅助
 import astrbot_plugin_minecraft_queqiao_next.core.constants as _c
-assert not hasattr(_c, "match_ai_command"), "不应残留 match_ai_command"
+assert not hasattr(_c, "match_ai_command") and not hasattr(_c, "DEFAULT_AI_CHAT_PREFIX")
 
-cfg = SC.from_dict({"server":{"server_name":"S"},"ai_chat_prefix":"ai"})
-ev_chat = QueQiaoEvent.from_dict({"post_type":"message","event_name":"PlayerChatEvent",
-    "message":"ai 你好","player":{"nickname":"A"}})
-# 以 / 开头的聊天内容同样不触发
-ev_slash = QueQiaoEvent.from_dict({"post_type":"message","event_name":"PlayerChatEvent",
-    "message":"/ai 你好","player":{"nickname":"A"}})
-# 指令事件一律不触发 AI
-ev_cmd = QueQiaoEvent.from_dict({"post_type":"message","event_name":"PlayerCommandEvent",
-    "command":"/ai 你好","player":{"nickname":"A"}})
-ev_join = QueQiaoEvent.from_dict({"event_name":"PlayerJoinEvent","player":{"nickname":"A"}})
+# 指标不再有 AI 计数入口与字段
+from astrbot_plugin_minecraft_queqiao_next.services.metrics import MetricsCollector as _MCm
+_mmetrics15 = _MCm()
+assert not hasattr(_mmetrics15, "record_ai_chat")
+assert not any(k.startswith("ai_chat") for k in _mmetrics15.get_stats())
 
-assert P._resolve_ai_question(cfg, ev_chat) == "你好"
-assert P._resolve_ai_question(cfg, ev_slash) is None, "指令式内容不应触发"
-assert P._resolve_ai_question(cfg, ev_cmd) is None, "指令事件不应触发 AI"
-assert P._resolve_ai_question(cfg, ev_join) is None
-# 空内容不发请求
-assert P._resolve_ai_question(cfg, QueQiaoEvent.from_dict(
-    {"event_name":"PlayerChatEvent","message":"ai"})) is None
-# 关掉总开关后不触发
-cfg_off = SC.from_dict({"server":{"server_name":"S"},"enable_ai_chat":False})
-assert P._resolve_ai_question(cfg_off, ev_chat) is None
-print("OK  仅聊天前缀触发、指令事件不触发、旧配置项已彻底移除")
-
-print("\n全部离线逻辑校验通过 ✅（含 AI 触发方式）")
+# schema 不再暴露 AI 配置项
+import json as _json15, pathlib as _pl15
+_schema15 = _json15.loads(
+    (_pl15.Path(__file__).with_name("_conf_schema.json")).read_text(encoding="utf-8"))
+_template15 = _schema15["mc_servers"]["templates"]["server"]["items"]
+assert "enable_ai_chat" not in _template15 and "ai_chat_prefix" not in _template15
+print("OK  配置项 / 主类方法 / 指标 / schema 均无 AI 残留")
 
 print("=== 16. 导入路径与真实 AstrBot API 对齐 ===")
 import astrbot.api as _api, astrbot.api.star as _star
@@ -832,7 +799,7 @@ print("OK  conf 模板与代码默认值逐项核对一致"
 
 print("\n全部离线逻辑校验通过 ✅（含 conf↔代码默认值守卫）")
 
-print("=== 23. API 超时语义：未知 ≠ 失败，禁止重发（AI 回复两遍的根因） ===")
+print("=== 23. API 超时语义：未知 ≠ 失败，禁止重发（同名回复重复两遍的根因） ===")
 import json as _json5
 from astrbot_plugin_minecraft_queqiao_next.core.constants import (
     API_BROADCAST as _APIB5,
@@ -2807,7 +2774,6 @@ _mc34.unsubscribe(_q34)
 _mc34.record_relay_to_ast("srv1", 2)
 _mc34.record_relay_to_mc("srv1", 3)
 _mc34.record_echo_suppressed("srv1", "test echo")
-_mc34.record_ai_chat("srv1", "Steve", "how are you?", True)
 _mc34.record_command_execution("srv1", "list", "queqiao")
 _mc34.record_command_execution("srv1", "tps", "direct")
 _mc34.record_command_execution("srv1", "stop", None)
@@ -2817,11 +2783,11 @@ _stats34 = _mc34.get_stats()
 assert _stats34["relayed_to_ast_total"] == 2
 assert _stats34["relayed_to_mc_total"] == 3
 assert _stats34["echo_suppressed_total"] == 1
-assert _stats34["ai_chat_total"] == 1
-assert _stats34["ai_chat_success_total"] == 1
+assert not any(k.startswith("ai_chat") for k in _stats34), "AI 指标应已移除"
 assert _stats34["cmd_executed_by_channel"] == {"queqiao": 1, "direct": 1, "failed": 1}
 assert _stats34["images_relayed_total"] == 1
-assert len(_mc34.get_history(limit=5)) >= 3
+# 当前事件历史 = chat + echo 两条（AI 问答事件已随功能移除）
+assert len(_mc34.get_history(limit=5)) == 2
 # 累计互通事件 = 游戏 → 外部（事件类型计数，如上面 1 条 chat） + 外部 → 游戏（3 条群转发）
 assert _stats34["total_events"] == 4, _stats34["total_events"]
 # 网页广播（relay）也计入 total_events 与 events_by_type
@@ -3034,9 +3000,8 @@ _mc34.record_event("chat", "Server", "<Steve> hi")
 _mc34.record_relay_to_mc("Server", 2)
 assert _mc34.get_server_event_count("Server") == 3
 assert _mc34.get_server_event_count("never-configured") == 0
-# echo / ai 等辅助事件不计入「累计互通事件」（与全局 total_events 同口径）
+# echo 等辅助事件不计入「累计互通事件」（与全局 total_events 同口径）
 _mc34.record_echo_suppressed("Server", "loop")
-_mc34.record_ai_chat("Server", "Steve", "hi", True)
 assert _mc34.get_server_event_count("Server") == 3, _mc34.get_server_event_count("Server")
 assert _mc34.get_stats()["events_by_server"]["Server"] == 3
 assert _mc34.get_stats()["events_by_server"]["srv1"] == 5  # chat 1 + relay 1 + 群转发 3
@@ -4470,7 +4435,8 @@ assert _new43["target_sessions"] == ["default:GroupMessage:2"]
 assert _new43["server"]["server_name"] == "Server2"
 assert _new43["server"]["display_name"] == "新服"
 assert _new43["server"]["ws_url"] == "ws://127.0.0.1:8280/minecraft/ws"
-assert _new43["ai_chat_prefix"] == "ai" and _new43["enable_ai_chat"] is True
+assert "enable_ai_chat" not in _new43 and "ai_chat_prefix" not in _new43, \
+    "AI 聊天已移除，新建条目不应再写入 AI 字段"
 assert _new43["server"]["reverse_port"] == 8080, "未指定的连接参数回落 schema 默认值"
 assert _new43["server"]["client_origin"] == "astrbot"
 assert isinstance(_new43["message"], dict) and _new43["message"]["forward_chat_format"]
@@ -4529,7 +4495,7 @@ _wa43.request.json = _orig_json43
 print("OK  条目列表(含未启用) / 新建按 schema 补齐 / 启用切换 / 字段级更新 / 改名冲突 / 删除 / 备份与热重载 / 未注入插件降级")
 
 
-print("\n=== 44. 仪表盘「功能设置」面板（AI 对话开关 / 面板偏好 / 折叠状态） ===")
+print("\n=== 44. 仪表盘「功能设置」面板（消息转发 / 连接通知 / 面板偏好 / 折叠状态） ===")
 import shutil as _sh44
 import pathlib as _pl44
 from astrbot_plugin_minecraft_queqiao_next.services.panel_prefs import PanelPrefsStore as _PP44
@@ -4555,8 +4521,6 @@ _conf44 = {
                 "ws_mode": "forward",
                 "ws_url": "ws://127.0.0.1:8080/minecraft/ws",
             },
-            "enable_ai_chat": True,
-            "ai_chat_prefix": "ai",
         },
     ],
 }
@@ -4583,8 +4547,6 @@ from astrbot_plugin_minecraft_queqiao_next.core.constants import (
 )
 
 _plugin44.SOFT_CONFIG_KEYS = (
-    "enable_ai_chat",
-    "ai_chat_prefix",
     "enable_local_translation",
     "forward_chat_to_astrbot",
     "forward_chat_format",
@@ -4613,7 +4575,6 @@ def _apply_soft44(server_name, fields):
     if cfg is None or not isinstance(fields, dict):
         return False
     _bool_keys44 = {
-        "enable_ai_chat": True,
         "enable_local_translation": False,
         "forward_chat_to_astrbot": True,
         "forward_join_leave_to_astrbot": False,
@@ -4671,16 +4632,10 @@ def _apply_soft44(server_name, fields):
 
 _plugin44.apply_soft_config = _apply_soft44
 
-# 列表：AI 字段取条目顶层（与 server 子对象平级，main 层用整条 entry 构造
-# ServerConfig），并做防御式布尔 / 字符串解析
+# AI 聊天能力已移除：配置列表接口不再回显 AI 字段
 _it44 = asyncio.run(_wac44.get_config_servers())["data"]["servers"][0]
-assert _it44["enable_ai_chat"] is True and _it44["ai_chat_prefix"] == "ai", _it44
-_plugin44.config["mc_servers"][0]["enable_ai_chat"] = "false"
-_plugin44.config["mc_servers"][0]["ai_chat_prefix"] = None
-_it44b = asyncio.run(_wac44.get_config_servers())["data"]["servers"][0]
-assert _it44b["enable_ai_chat"] is False and _it44b["ai_chat_prefix"] == ""
-_plugin44.config["mc_servers"][0]["enable_ai_chat"] = True
-_plugin44.config["mc_servers"][0]["ai_chat_prefix"] = "ai"
+for _gone_key44 in ("enable_ai_chat", "ai_chat_prefix", "prefixes_conflict"):
+    assert _gone_key44 not in _it44, f"配置列表不应再出现 {_gone_key44}"
 
 _orig_json44 = _wa44.request.json
 
@@ -4691,36 +4646,6 @@ def _set_payload44(payload):
 
     _wa44.request.json = _fake
 
-
-# 面板改 AI 开关：写条目顶层 + 落盘 + 就地生效，且不得污染 server 子对象。
-# 只改 AI 开关属「软字段」：热重载会断开全部连接并重启监控 / 内置图床，
-# 代价与收益不匹配，必须免重载
-_set_payload44({"index": 0, "enable_ai_chat": False, "ai_chat_prefix": "小助手"})
-_resp44 = asyncio.run(_wac44.update_config_server())
-assert _resp44["data"]["saved"] is True
-assert _resp44["data"]["reloaded"] is False, "只改 AI 开关不得热重载"
-_entry44 = _plugin44.config["mc_servers"][0]
-assert _entry44["enable_ai_chat"] is False and _entry44["ai_chat_prefix"] == "小助手"
-assert "enable_ai_chat" not in _entry44["server"], "AI 字段属条目顶层，不得写进 server 子对象"
-assert _entry44["server"]["server_name"] == "Server", "未传字段不得被改动"
-assert _entry44["enabled"] is True and _entry44["target_sessions"] == ["default:GroupMessage:1"]
-assert _plugin44.reloads == 0, "AI 开关保存不得热重载（连接与监控保持不动）"
-assert _cfg44_run.enable_ai_chat is False and _cfg44_run.ai_chat_prefix == "小助手", \
-    "运行时 ServerConfig 必须就地更新，否则要等下次重载才生效"
-# 回读与落盘一致（面板保存后 refreshAll 会重新拉这个接口）
-_it44c = asyncio.run(_wac44.get_config_servers())["data"]["servers"][0]
-assert _it44c["enable_ai_chat"] is False and _it44c["ai_chat_prefix"] == "小助手"
-
-# 前缀置空 = 不触发 AI（合法路径，main 层据此不再走 AI 分支）
-_set_payload44({"index": 0, "ai_chat_prefix": "   "})
-asyncio.run(_wac44.update_config_server())
-assert _plugin44.config["mc_servers"][0]["ai_chat_prefix"] == "", "空白前缀需 strip 成空串"
-assert _cfg44_run.ai_chat_prefix == "" and _plugin44.reloads == 0, "运行时前缀同样需 strip"
-# 字符串布尔写回（表单 / WebUI 可能传字符串）
-_set_payload44({"index": 0, "enable_ai_chat": "true"})
-asyncio.run(_wac44.update_config_server())
-assert _plugin44.config["mc_servers"][0]["enable_ai_chat"] is True
-assert _cfg44_run.enable_ai_chat is True and _plugin44.reloads == 0
 
 # ---- 消息转发（conf 的 message 子对象）：面板「功能设置」读写 ----
 # 列表接口回显 message 子对象，缺省值回落 schema 默认（面板首次打开即真实值）
@@ -4798,7 +4723,7 @@ assert _it44e["target_sessions"] == ["umo:GroupMessage:9", "umo:GroupMessage:2"]
 # 本地翻译开关回显：面板保存后必须原样返回，否则前端把复选框重置为取消
 assert _it44e["message"]["enable_local_translation"] is False
 
-# 服务器连通通知（条目顶层，与 enable_ai_chat 平级）：列表默认关闭 + 文案回落默认
+# 服务器连通通知（条目顶层）：列表默认关闭 + 文案回落默认
 assert _it44d["notify_on_connect"] is False
 assert _it44d["notify_on_connect_format"] == _DCN44, _it44d
 assert _it44d["notify_on_connect_fail"] is False
@@ -4861,7 +4786,7 @@ _set_payload44({"index": 0, "connect_fail_notify_delay": -10})
 asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["connect_fail_notify_delay"] == 0
 assert _cfg44_run.connect_fail_notify_delay == 0
-_set_payload44({"index": 0, "enable_ai_chat": True})
+_set_payload44({"index": 0, "slp_address": ""})
 asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["connect_fail_notify_delay"] == 0, \
     "漏传该字段不得清空"
@@ -4876,7 +4801,7 @@ assert _plugin44.config["mc_servers"][0]["slp_address"] == "127.0.0.1:25565"
 assert _cfg44_run.slp_address == "127.0.0.1:25565", "运行时 ServerConfig 必须就地更新"
 _it44s = asyncio.run(_wac44.get_config_servers())["data"]["servers"][0]
 assert _it44s["slp_address"] == "127.0.0.1:25565", _it44s
-_set_payload44({"index": 0, "enable_ai_chat": True})
+_set_payload44({"index": 0, "terminal_days": 2})
 asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["slp_address"] == "127.0.0.1:25565", \
     "漏传该字段不得清空"
@@ -4919,7 +4844,7 @@ asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["quiet_hours_start"] == _DQHS44
 assert _cfg44_run.quiet_hours_end == _DQHE44
 # 漏传不覆盖（合并语义）
-_set_payload44({"index": 0, "ai_chat_prefix": "ai"})
+_set_payload44({"index": 0, "terminal_days": 2})
 asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["quiet_hours_enabled"] is True, \
     "漏传免打扰开关不得清空"
@@ -4931,14 +4856,14 @@ asyncio.run(_wac44.update_config_server())
 assert _cfg44_run.quiet_hours_enabled is False
 
 # 连接类字段（display_name / ws_url / enabled 等）仍走完整热重载
-_set_payload44({"index": 0, "enable_ai_chat": True, "display_name": "新名字"})
+_set_payload44({"index": 0, "terminal_days": 2, "display_name": "新名字"})
 _resp44b = asyncio.run(_wac44.update_config_server())
 assert _resp44b["data"]["reloaded"] is True, "带连接类字段必须热重载"
 assert _plugin44.reloads == 1
 # 运行时未命中（未启用的服务器 / 无实例）时回落热重载，保证配置与运行态一致
 _prev_configs44 = _wac44.configs
 _wac44.configs = {}
-_set_payload44({"index": 0, "enable_ai_chat": False})
+_set_payload44({"index": 0, "terminal_days": 2})
 _resp44c = asyncio.run(_wac44.update_config_server())
 assert _resp44c["data"]["reloaded"] is True and _plugin44.reloads == 2
 _wac44.configs = _prev_configs44
@@ -4968,7 +4893,7 @@ asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["terminal_days"] == 7
 assert _cfg44_run.terminal_days == 7
 # 漏传不覆盖（合并语义）
-_set_payload44({"index": 0, "ai_chat_prefix": "x"})
+_set_payload44({"index": 0, "connect_fail_notify_delay": _DCFND44})
 asyncio.run(_wac44.update_config_server())
 assert _plugin44.config["mc_servers"][0]["terminal_days"] == 7, "漏传不得清空既有值"
 # 回读与落盘一致（面板保存后 refreshAll 会重新拉这个接口）
@@ -5012,7 +4937,7 @@ _web44 = _pl44.Path(__file__).resolve().parent / "pages" / "dashboard"
 _html44 = (_web44 / "index.html").read_text(encoding="utf-8")
 _js44 = (_web44 / "app.js").read_text(encoding="utf-8")
 _css44 = (_web44 / "style.css").read_text(encoding="utf-8")
-for _need44 in ('id="settings-panel"', 'id="st-ai-enabled"', 'id="st-ai-prefix"',
+for _need44 in ('id="settings-panel"',
                 'id="st-fwd-chat"', 'id="st-fwd-chat-format"', 'id="st-fwd-joinleave"',
                 'id="st-fwd-death"', 'id="st-fwd-achievement"', 'id="st-fwd-image"',
                 'id="st-fwd-image-to-mc"', 'id="st-fwd-image-from-mc"',
@@ -5022,6 +4947,11 @@ for _need44 in ('id="settings-panel"', 'id="st-ai-enabled"', 'id="st-ai-prefix"'
                 'id="st-auto-refresh"', 'id="st-terminal-days"', 'id="settings-save"',
                 'id="settings-toggle"'):
     assert _need44 in _html44, f"设置面板缺少 {_need44}"
+# AI 聊天设置组已移除：HTML / JS 不得再出现 AI 控件与字段
+assert 'id="st-ai-enabled"' not in _html44 and 'id="st-ai-prefix"' not in _html44, \
+    "AI 设置组应已从页面移除"
+assert "enable_ai_chat" not in _js44 and "ai_chat_prefix" not in _js44, \
+    "前端不得再读写 AI 字段"
 assert 'id="tab-image-bed"' in _html44 and 'id="btn-config-view"' in _html44, (
     "顶部标签栏保留图床入口，配置管理入口为「⚙️ 设置」旁的按钮"
 )
@@ -5054,6 +4984,8 @@ for _need44 in ('id="config-view"', 'id="btn-json-toggle"',
                 'id="btn-save"', 'id="cfg-json-text"'):
     assert _need44 in _html44, f"配置视图缺少 {_need44}"
 assert 'id="cfg-nav"' not in _html44, "侧边分区导航已移除（表单按进入前视图只渲染对应部分）"
+assert "enable_ai_chat" not in _cvjs44 and "ai_chat_prefix" not in _cvjs44, \
+    "配置视图不得再渲染 AI 字段"
 for _need44 in ("config/full", "config/save", "buildViewForm", "switchMode",
                 "settings-row", "currentView",
                 "queqiao:config-saved", "queqiao:config-view-open",
@@ -5082,8 +5014,8 @@ _cfgschema44 = json.loads(
 assert _cfgschema44["mc_servers"]["templates"]["server"]["items"][
     "terminal_days"
 ]["type"] == "integer", "terminal_days 在 schema 中应是 integer（前端已兼容）"
-print("OK  AI 字段条目顶层读写(不污染 server 子对象) / 前缀置空与字符串布尔 / "
-      "消息转发 message 子对象读写·漏传合并·运行时就地生效 / 目标会话软更新 / "
+print("OK  AI 字段已彻底移除(页面/接口/前端) / 消息转发 message 子对象读写·漏传合并·"
+      "运行时就地生效 / 目标会话软更新 / 连接通知与免打扰·终端天数软更新 / "
       "自动刷新间隔与折叠状态钳制·合并·落盘 / 监控弹窗控件迁移与前端静态守卫")
 
 
@@ -7356,3 +7288,259 @@ finally:
 
 print("OK  名称常量分离/首次复制含子目录/旧目录保留/新目录非空跳过/旧目录缺失跳过/自我复制跳过/注入旧目录/失败仅告警 全部通过")
 
+
+
+print("\n=== 61. RCON 长回包拆包 / 串扰：TPS 与玩家列表互不污染 ===")
+import asyncio as _asyncio61
+import struct as _struct61
+from astrbot_plugin_minecraft_queqiao_next.core.constants import (
+    strip_format_codes as _strip61,
+)
+from astrbot_plugin_minecraft_queqiao_next.core.rcon_client import (
+    RconClient as _RC61,
+    looks_like_player_list as _looks_pl61,
+    looks_like_tps_output as _looks_tps61,
+    _encode_packet as _enc61,
+    _decode_packet as _dec61,
+)
+from astrbot_plugin_minecraft_queqiao_next.core.models_config import (
+    ServerConfig as _SC61,
+)
+from astrbot_plugin_minecraft_queqiao_next.core.server_manager import (
+    ServerInstance as _SI61,
+)
+from astrbot_plugin_minecraft_queqiao_next.services.monitor import (
+    MonitorCollector as _MC61,
+    brand_from_tps_command as _brand61,
+    parse_tps as _parse_tps61,
+    tps_command_candidates as _cands61,
+)
+
+# (a) 用户实测的 RCON 串扰形态：\`list\` 读到了 forge tps 的长回包残片。
+# 该文本恰好含冒号，旧实现会把它整段当成玩家名——现在必须识别为非 list 回包
+_FORGE_LEAK61 = (
+    "Dim minecraft:overworld (minecraft:overworld): Mean tick time: 10.210 ms. Mean TPS: 20.000\n"
+    "Dim ageofmythology:the_endless (ageofmythology:the_endless): Mean tick time: 0.046 ms. Mean TPS: 20.000\n"
+    "Overall: Mean tick time: 4.424 ms. Mean TPS: 20.000"
+)
+assert _RC61.parse_player_list(_FORGE_LEAK61) is None, "TPS 长回包不得解析成玩家名"
+assert _looks_tps61(_FORGE_LEAK61) and not _looks_pl61(_FORGE_LEAK61)
+assert _RC61.parse_player_list("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0") is None
+assert _RC61.parse_player_list(
+    "There are 2 of a max of 20 players online: Alice, Bob") == ["Alice", "Bob"]
+# 带 § 颜色码的回包：先剥离再解析，名字中的格式码也要去掉
+assert _RC61.parse_player_list(
+    "§aThere are 2 of a max of 20 players online: §bAlice§r, Bob") == ["Alice", "Bob"]
+assert _RC61.parse_player_list("There are 0 of a max of 20 players online: ") == []
+assert _RC61.parse_player_list(None) is None and _RC61.parse_player_list("") is None
+assert _strip61("§aTPS\x1b[31m from§r last") == "TPS from last"
+
+# (b) TPS 解析：颜色码/ANSI 混排、更长的窗口列表、spark 的 \`*\` 采样标记，
+# 以及被截断到行中间的 Forge 长输出（完整的前几行仍可解析）
+assert _parse_tps61("TPS from last 1m, 5m, 15m, 1h: 20.00, 19.95, 19.80, 19.5") \
+    == (20.0, 19.95, 19.8)
+assert _parse_tps61("TPS from last 1m, 5m, 15m: 20.0*, 18.0*, 19.0*") \
+    == (20.0, 18.0, 19.0)
+assert _parse_tps61("\x1b[32mTPS from last 1m, 5m, 15m: 19.5, 20.0, 20.0\x1b[0m") \
+    == (19.5, 20.0, 20.0)
+assert _parse_tps61("§aTPS from last 1m, 5m, 15m: §219.5, 20.0, 20.0") \
+    == (19.5, 20.0, 20.0)
+assert _parse_tps61(
+    "Dim minecraft:overworld (minecraft:overworld): Mean tick time: 10.210 ms. "
+    "Mean TPS: 20.000") == (20.0, None, None)
+# 截断到行中间的 Forge 输出：首行完整即可解析
+assert _parse_tps61(
+    _FORGE_LEAK61[: _FORGE_LEAK61.index("Dim ageofmythology")]) == (20.0, None, None)
+# 玩家列表文本不得被当 TPS；裸三数越界（误判场景）不采信
+assert _parse_tps61("There are 2 of a max of 20 players online: Alice, Bob") is None
+assert _parse_tps61("TPS: 20.0, 30.0, 25.0") is None
+
+# (c) Forge/NeoForge 短输出指令：鹊桥 RCON 通道优先 \`dim <主世界>\`，
+# 输出单行不会触发服务端拆包；直连通道仍用完整指令保留 Overall 均值
+assert _cands61("forge 1.20.1", "auto", short_output=True)[:2] == [
+    "forge tps dim minecraft:overworld", "forge tps"]
+assert _cands61("NeoForge 21.1.0", "auto", short_output=True)[:2] == [
+    "neoforge tps dim minecraft:overworld", "forge tps dim minecraft:overworld"]
+assert _cands61("Paper 1.20.4", "auto", short_output=True) \
+    == ["tps", "forge tps", "spark tps"]
+assert _cands61("forge 1.20.1", "spark tps", short_output=True) == ["spark tps"], \
+    "显式指令不受短输出策略影响"
+assert _brand61("forge tps dim minecraft:overworld") == "forge"
+assert _brand61("neoforge tps dim minecraft:overworld") == "neoforge"
+
+# (d) 直连 RCON：协议包编解码 + 多包响应完整拼接（本地假 RCON 服务端）
+_pkt61 = _enc61(1234, 2, b"hello")
+assert _dec61(_pkt61) == (1234, 2, b"hello")
+
+
+async def _rcon_roundtrip61(payload_chunks):
+    async def _handler(reader, writer):
+        try:
+            length = _struct61.unpack("<i", await reader.readexactly(4))[0]
+            await reader.readexactly(length)  # 登录包
+            writer.write(_enc61(42, 0, b""))  # 鉴权响应
+            await writer.drain()
+            length = _struct61.unpack("<i", await reader.readexactly(4))[0]
+            body = await reader.readexactly(length)  # 指令包
+            req_id = _struct61.unpack("<ii", body[:8])[0]
+            for chunk in payload_chunks:
+                writer.write(_enc61(req_id, 0, chunk))
+                await writer.drain()
+                await _asyncio61.sleep(0.01)
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await _asyncio61.start_server(_handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    config = _SC61.from_dict({"cmd": {
+        "rcon_enabled": True, "rcon_host": "127.0.0.1",
+        "rcon_port": port, "rcon_password": "pw",
+    }})
+    client = _RC61(config)
+    try:
+        assert await client.connect() is True
+        assert client.connected is True
+        return await client.execute("forge tps")
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+
+
+# 完整 forge tps 输出被服务端拆成 4096 字节 + 尾包：必须拿到完整输出，
+# 不能只留首包（旧实现的截断/串扰根因）
+_big61 = b"D" * 4096
+_out61 = _asyncio61.run(_rcon_roundtrip61([_big61, b"Overall tail"]))
+assert _out61 == ("D" * 4096) + "Overall tail", "多包响应必须完整拼接"
+
+
+# 单包响应也照常工作（不因等待拆包而卡住）
+_out61b = _asyncio61.run(_rcon_roundtrip61([b"single"]))
+assert _out61b == "single"
+
+# (e) TPS 采样串扰自愈：先读到玩家列表文本 → 重试同一只读指令拿回 TPS
+class _Inst61:
+    def __init__(self, outputs, connected=True, queqiao_ok=True):
+        self.client = type("_C", (), {"connected": connected})()
+        self.queqiao_rcon_ok = queqiao_ok
+        self._outputs = list(outputs)
+        self.calls = []
+
+    async def execute_command_with_channel(self, command):
+        self.calls.append(command)
+        if not self._outputs:
+            return None, ""
+        return self._outputs.pop(0), "queqiao"
+
+
+_col61 = _MC61(pathlib.Path(tempfile.mkdtemp()), None)
+assert _col61._queqiao_rcon_active(_Inst61([], True, True)) is True
+assert _col61._queqiao_rcon_active(_Inst61([], True, False)) is False
+assert _col61._queqiao_rcon_active(_Inst61([], False, None)) is False
+_inst61 = _Inst61([
+    "There are 1 of a max of 20 players online: Steve",
+    "TPS from last 1m, 5m, 15m: 19.5, 20.0, 20.0",
+])
+_parsed61, _raw61 = _asyncio61.run(
+    _col61._execute_tps_command("S61", _inst61, "forge tps"))
+assert _parsed61 == (19.5, 20.0, 20.0), _parsed61
+assert len(_inst61.calls) == 2, "串扰时只读 TPS 指令允许重试一次"
+
+# (f) 玩家列表串扰自愈：\`list\` 读到 TPS 文本 → 重试一次拿回真实玩家名单；
+# 非标准且非 TPS 的文本不重试，直接降级在线查询
+class _Cli61:
+    def __init__(self, outputs, status=None):
+        self.connected = True
+        self._outputs = list(outputs)
+        self._status = status
+        self.rcon_calls = 0
+
+    async def send_rcon_command(self, command):
+        self.rcon_calls += 1
+        return self._outputs.pop(0) if self._outputs else None
+
+    async def get_status(self):
+        return self._status
+
+
+class _Rcon61:
+    enabled = False
+    connected = False
+
+    def __init__(self):
+        self.closed = 0
+
+    async def execute(self, command):
+        return None
+
+    async def close(self):
+        self.closed += 1
+
+
+_cfg61 = _SC61.from_dict({"server": {"server_name": "S61"}})
+_i61 = _SI61(_cfg61)
+_i61.client = _Cli61([_FORGE_LEAK61, "There are 1 of a max of 20 players online: Steve"])
+_i61.rcon = _Rcon61()
+_res61 = _asyncio61.run(_i61.fetch_player_list(force_rcon=True))
+assert _res61.source == "rcon" and _res61.names == ["Steve"], \
+    (_res61.source, _res61.names)
+assert _i61.client.rcon_calls == 2, "串扰时只读 list 查询允许重试一次"
+assert _i61.online_players == {"Steve"}, "串扰文本不得写进在线玩家缓存"
+
+_i61b = _SI61(_cfg61)
+_i61b.client = _Cli61(
+    ["custom list format: A, B"],  # 非标准也非 TPS 文本：不重试
+    {"server_list_ping": {"players": {"online": 1, "max": 20,
+                                      "sample": [{"name": "Steve", "id": "u"}]}}})
+_i61b.rcon = _Rcon61()
+_res61b = _asyncio61.run(_i61b.fetch_player_list(force_rcon=True))
+assert _i61b.client.rcon_calls == 1, "非串扰的无法识别输出不重试"
+assert _res61b.source == "slp" and _res61b.names == ["Steve"]
+
+# 直连通道读到无法识别的输出：断开重连以便下一轮重新对齐
+_i61c = _SI61(_cfg61)
+_i61c.client = _Cli61([])
+_i61c.client.connected = False
+_i61c.rcon = _Rcon61()
+_i61c.rcon.enabled = True
+
+
+async def _exec_bad61(command):
+    return "not a list response"
+
+
+_i61c.rcon.execute = _exec_bad61  # type: ignore[method-assign]
+_res61c = _asyncio61.run(_i61c.fetch_player_list(force_rcon=True))
+assert _res61c.source == "none", _res61c.source
+assert _i61c.rcon.closed == 1, "直连通道响应错位时应断开重连"
+
+# (g) 指令串行化：list 与 tps 并发下发时同一时刻只能有一条在途
+class _CliSerial61:
+    def __init__(self):
+        self.connected = True
+        self.active = 0
+        self.max_active = 0
+
+    async def send_rcon_command(self, command):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        await _asyncio61.sleep(0.01)
+        self.active -= 1
+        return "There are 0 of a max of 20 players online: "
+
+
+async def _concurrent61(instance):
+    await _asyncio61.gather(
+        *[instance.execute_command_with_channel("list") for _ in range(3)],
+        *[instance.execute_command_with_channel("forge tps") for _ in range(3)],
+    )
+
+
+_i_serial61 = _SI61(_cfg61)
+_i_serial61.client = _CliSerial61()
+_i_serial61.rcon = _Rcon61()
+_asyncio61.run(_concurrent61(_i_serial61))
+assert _i_serial61.client.max_active == 1, "RCON 指令必须串行执行"
+print("OK  串扰文本不解析成玩家 / TPS 颜色码与截断解析 / 短输出候选 / RCON 多包拼接 / 只读查询串扰自愈 / 指令串行")

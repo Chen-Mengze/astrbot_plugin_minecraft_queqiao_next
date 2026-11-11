@@ -94,18 +94,6 @@
               }
             }
           },
-          "enable_ai_chat": {
-            "type": "bool",
-            "description": "启用 AI 对话功能",
-            "hint": "开启后，游戏内聊天以 AI 前缀开头时与 AI 对话，回复私聊给该玩家。不影响正常的群服互通",
-            "default": true
-          },
-          "ai_chat_prefix": {
-            "type": "string",
-            "description": "AI 对话触发前缀",
-            "hint": "游戏内聊天以此前缀开头时触发 AI（例如填写 ai 则发送『ai 你好』）。命中该前缀的消息只走 AI，不再转发到群。留空表示不启用 AI 触发，普通聊天不受影响",
-            "default": "ai"
-          },
           "terminal_days": {
             "type": "integer",
             "description": "互通终端加载最近几天的日志分片",
@@ -243,7 +231,7 @@
               "auto_forward_prefix": {
                 "type": "string",
                 "description": "外部消息转发到MC的前缀",
-                "hint": "外部会话中以此前缀开头的消息才被转发到MC服务器（例如: *）；默认留空 = 全部转发（仅对已绑定目标会话的会话生效）。请勿与上面的 AI 前缀相互包含，否则同一条消息的归属会产生歧义",
+                "hint": "外部会话中以此前缀开头的消息才被转发到MC服务器（例如: *）；默认留空 = 全部转发（仅对已绑定目标会话的会话生效）",
                 "default": ""
               },
               "broadcast_format": {

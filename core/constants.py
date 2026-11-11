@@ -3,6 +3,8 @@
 本模块位于依赖链最底层，不得 import 本插件其它模块。
 """
 
+import re
+
 PLUGIN_NAME = "astrbot_plugin_minecraft_queqiao_next"
 PLUGIN_DATA_DIR = "astrbot_plugin_minecraft_queqiao_next"
 # 旧插件名（本仓库上游同名）：插件更名后 AstrBot 会按新名字给全新的数据目录，
@@ -71,6 +73,15 @@ FATAL_HTTP_STATUS = {401, 403, 404}
 # 注意：超时 ≠ 失败 —— WS 发送成功后鹊桥大概率已投递，只是响应慢/丢失；
 # 调用方不得在超时后原样重发（会重复投递），语义见 queqiao_client.QueQiaoTimeout
 API_TIMEOUT = 10
+
+# ---- 直连 RCON 兜底 ----
+# 连接与单条指令响应超时（秒）。RCON 是同步请求-响应协议，服务端卡顿/指令
+# 执行慢时响应会变晚；超时按「结果未知」处理（见 6.5 超时 ≠ 失败），不重发。
+RCON_CONNECT_TIMEOUT = 5
+RCON_COMMAND_TIMEOUT = 10
+# Minecraft 服务端单条 RCON 包的载荷上限：超过该长度的输出会被拆成多条
+# 响应包，客户端必须完整拼接（见 core/rcon_client.py）
+RCON_MAX_PACKET_PAYLOAD = 4096
 
 # ---- 转发与回环抑制 ----
 
@@ -222,7 +233,7 @@ MONITOR_REALTIME_MIN = 1
 MONITOR_REALTIME_MAX = 60
 # 互通终端默认加载最近几天的分片（含当天）：避免一次拉取 30 天全量。
 # 属每台服务器独立配置：面板「互通终端」天数写入 conf 条目顶层（与
-# enable_ai_chat 平级），Web API 拉日志时由前端按当前服务器传入
+# 消息转发等条目级配置平级），Web API 拉日志时由前端按当前服务器传入
 DEFAULT_TERMINAL_DAYS = 2
 TERMINAL_DAYS_MIN = 0
 TERMINAL_DAYS_MAX = 30
@@ -243,14 +254,27 @@ MONITOR_BRAND_PROBE_RETRY_SECONDS = 300
 MONITOR_TPS_RETRY_SECONDS = 300
 
 
+# MC 文本格式码（§a 这类）与 ANSI 转义序列：RCON 回传的文本可能带颜色码，
+# 解析前统一剥离，否则数字/关键字会被格式码切断
+_FORMAT_SECTION_RE = re.compile(r"§.")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_format_codes(text: str) -> str:
+    """剥离 Minecraft § 格式码与 ANSI 转义序列，返回可直接解析的纯文本。"""
+    if not text:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", _FORMAT_SECTION_RE.sub("", text))
+
+
 def prefix_matches(prefix: str, text: str) -> bool:
     """判断文本是否以指定前缀触发（词边界感知，字母部分不区分大小写）。
 
     短前缀（如 `ai`）若只做 `startswith` 会误伤同词头的正常发言：
-    `aim 很高`、`airport` 都会被当成 AI 触发。因此当前缀以字母/数字结尾时，
+    `aim 很高`、`airport` 都会被误判为命中。因此当前缀以字母/数字结尾时，
     要求其后紧跟分隔符（空格）或行尾，避免把单词截断算作命中。
 
-    纯字母前缀同时忽略大小写，让 `AI 你好` 与 `ai 你好` 等效。
+    纯字母前缀同时忽略大小写，让 `* 你好` 一类指令式前缀更宽容。
 
     非字母数字结尾的前缀（如 `*`、`!`）本身已具备分隔作用，保持简单前缀匹配。
     """

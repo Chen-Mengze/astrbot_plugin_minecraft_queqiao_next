@@ -3276,7 +3276,7 @@ class DashboardApp {
     }
   }
 
-  // ---------- 「功能设置」折叠面板（AI 对话 / 面板偏好） ----------
+  // ---------- 「功能设置」折叠面板（消息转发 / 连接通知 / 面板偏好） ----------
   // 折叠状态由后端 panel_prefs.json 记忆（换设备 / 刷新后保持）
   setSettingsCollapsed(collapsed, { persist = true } = {}) {
     const panel = document.getElementById('settings-panel');
@@ -3295,14 +3295,14 @@ class DashboardApp {
     });
   }
 
-  // 填充设置面板：AI 组按当前服务器（来自 conf 条目，回落服务器摘要），
-  // 全局视图下无目标服务器时整组禁用；偏好组为全局值
+  // 填充设置面板：设置项按当前服务器（来自 conf 条目，回落服务器摘要），
+  // 全局视图下无目标服务器时整块隐藏
   renderSettingsPanel() {
     const panel = document.getElementById('settings-panel');
     if (!panel) return;
     const server = this.activeServerObject();
-    // 全部服务器视图：整块隐藏。AI 开关与互通终端天数都需落在具体服务器上，
-    // 全局视图不展示也不可保存（自动刷新间隔已迁至右上角「⚙ 设置」弹窗）
+    // 全部服务器视图：整块隐藏。各项设置都需落在具体服务器上，全局视图
+    // 不展示也不可保存（自动刷新间隔已迁至右上角「⚙ 设置」弹窗）
     if (!server) {
       panel.classList.add('hidden');
       return;
@@ -3317,26 +3317,12 @@ class DashboardApp {
         toggle.setAttribute('aria-expanded', this.settingsCollapsed ? 'false' : 'true');
       }
     }
-    const aiGroup = document.getElementById('settings-group-ai');
-    const enabledBox = document.getElementById('st-ai-enabled');
-    const prefixBox = document.getElementById('st-ai-prefix');
     const saveBtn = document.getElementById('settings-save');
     const status = document.getElementById('settings-status');
     const confItem = (this.configServers || [])
       .find((s) => s.server_name === server.server_name) || null;
-    if (enabledBox && prefixBox) {
-      enabledBox.checked = confItem && typeof confItem.enable_ai_chat === 'boolean'
-        ? confItem.enable_ai_chat
-        : server.enable_ai_chat !== false;
-      prefixBox.value = confItem && typeof confItem.ai_chat_prefix === 'string'
-        ? confItem.ai_chat_prefix
-        : (server.ai_chat_prefix || '');
-      enabledBox.disabled = false;
-      prefixBox.disabled = false;
-      if (aiGroup) aiGroup.classList.remove('disabled');
-      if (saveBtn) saveBtn.disabled = false;
-      if (status) status.textContent = '';
-    }
+    if (saveBtn) saveBtn.disabled = false;
+    if (status) status.textContent = '';
     // 互通终端天数（每台服务器独立，conf 条目顶层；缺省 2）：
     // 正在编辑的输入框不回写，避免打断输入
     const daysBox = document.getElementById('st-terminal-days');
@@ -3346,7 +3332,7 @@ class DashboardApp {
         : 2;
       daysBox.value = String(Math.max(0, Math.min(30, daysVal)));
     }
-    // 服务器连通通知（conf 条目顶层，与 enable_ai_chat 平级）：开关 + 文案。
+    // 服务器连通通知（conf 条目顶层）：开关 + 文案。
     // 正在编辑的控件不回写，避免打断输入
     const notifyBox = document.getElementById('st-notify-connect');
     const notifyFormat = document.getElementById('st-notify-format');
@@ -3481,34 +3467,19 @@ class DashboardApp {
       this.showToast('断连静默期需在 0-3600 秒之间', 'error');
       return;
     }
-    const enabledBox = document.getElementById('st-ai-enabled');
-    const prefixBox = document.getElementById('st-ai-prefix');
-    const aiEnabled = !!(enabledBox && enabledBox.checked);
-    const aiPrefix = prefixBox ? prefixBox.value.trim() : '';
     const confItem = server
       ? (this.configServers || []).find((s) => s.server_name === server.server_name) || null
       : null;
-    // 前缀冲突预检：AI 前缀与自动转发前缀互相包含时，同一条消息会命中两条
-    // 路径（启动时后端也会告警），这里提前拦截
-    const fwdMsg = (confItem && confItem.message) || {};
-    const forwardPrefix = (typeof fwdMsg.auto_forward_prefix === 'string' && fwdMsg.auto_forward_prefix)
-      || (confItem && confItem.auto_forward_prefix)
-      || (server && server.auto_forward_prefix) || '';
-    if (server && aiEnabled && aiPrefix && forwardPrefix &&
-        (aiPrefix.startsWith(forwardPrefix) || forwardPrefix.startsWith(aiPrefix))) {
-      this.showToast('AI 触发前缀与自动转发前缀互相包含，请改成互不包含的前缀', 'error');
-      return;
-    }
     if (saveBtn) saveBtn.disabled = true;
     if (status) status.textContent = '保存中…';
     try {
-      // 互通终端天数 + AI/消息转发：全部写插件 conf（每台服务器独立）。
+      // 互通终端天数 + 消息转发：全部写插件 conf（每台服务器独立）。
       // 后端对「只改软开关」的保存走落盘 + 就地生效，不重建连接（reloaded=false）；
       // 一旦带上连接类字段才热重载
       let reloaded = false;
       let daysChanged = false;
       {
-        const payload = { enable_ai_chat: aiEnabled, ai_chat_prefix: aiPrefix };
+        const payload = {};
         // 互通终端加载天数（单服生效，0~30；后端会再钳制一次）
         daysChanged = daysVal !== this.terminalDaysFor(server.server_name);
         payload.terminal_days = daysVal;

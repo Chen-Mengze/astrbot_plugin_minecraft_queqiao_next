@@ -472,10 +472,7 @@ class WebApiController:
                     "rcon_fallback_enabled": config.rcon_fallback_enabled,
                     "rcon_connected": direct_rcon_connected,
                     "rcon_channels": rcon_channels,
-                    "prefixes_conflict": config.prefixes_conflict,
                     "auto_forward_prefix": config.auto_forward_prefix,
-                    "ai_chat_prefix": config.ai_chat_prefix,
-                    "enable_ai_chat": config.enable_ai_chat,
                     "target_sessions_count": len(config.target_sessions),
                     "status": status_data,
                     "players": players_data,
@@ -1229,17 +1226,12 @@ class WebApiController:
                     # 不返回 access_token 明文，只暴露「是否已设置」
                     "access_token_set": bool(str(server.get("access_token") or "").strip()),
                     "target_sessions": _as_str_list(entry.get("target_sessions")),
-                    # AI 对话开关（每台服务器独立）：面板「功能设置」直接读写，
-                    # 字段与 main 层 _match_ai_prefix / _handle_ai_chat 同源，
-                    # 注意落在条目顶层（与 server 子对象平级，ServerConfig 读整条）
-                    "enable_ai_chat": _as_bool(entry.get("enable_ai_chat"), True),
-                    "ai_chat_prefix": str(entry.get("ai_chat_prefix") or ""),
                     # 互通终端加载天数（每台服务器独立，条目顶层；缺省回落默认）
                     "terminal_days": _as_int_clamped(
                         entry.get("terminal_days"), DEFAULT_TERMINAL_DAYS,
                         TERMINAL_DAYS_MIN, TERMINAL_DAYS_MAX,
                     ),
-                    # 服务器连通通知（条目顶层，与 enable_ai_chat 平级）
+                    # 服务器连通通知（条目顶层）
                     "notify_on_connect": _as_bool(
                         entry.get("notify_on_connect"), False
                     ),
@@ -1451,19 +1443,13 @@ class WebApiController:
             )
         if "target_sessions" in payload:
             entry["target_sessions"] = _as_str_list(payload.get("target_sessions"))
-        # AI 对话开关（面板「功能设置」）：字段位于条目顶层（与 server 子对象
-        # 平级，main 层用整条 entry 构造 ServerConfig），不可写进 server 内
-        if "enable_ai_chat" in payload:
-            entry["enable_ai_chat"] = _as_bool(payload.get("enable_ai_chat"), True)
-        if "ai_chat_prefix" in payload:
-            entry["ai_chat_prefix"] = str(payload.get("ai_chat_prefix") or "").strip()
         if "terminal_days" in payload:
             # 互通终端加载天数（每台服务器独立，面板「功能设置」读写条目顶层）
             entry["terminal_days"] = _as_int_clamped(
                 payload.get("terminal_days"), DEFAULT_TERMINAL_DAYS,
                 TERMINAL_DAYS_MIN, TERMINAL_DAYS_MAX,
             )
-        # 服务器连通通知（条目顶层，与 enable_ai_chat 平级）：开关 + 文案模板，
+        # 服务器连通通知（条目顶层）：开关 + 文案模板，
         # 文案留空由 ServerConfig 回落默认（不发送空消息）
         if "notify_on_connect" in payload:
             entry["notify_on_connect"] = _as_bool(
@@ -1548,13 +1534,11 @@ class WebApiController:
         if "enabled" in payload:
             entry["enabled"] = _as_bool(payload.get("enabled"), True)
 
-        # 仅改动「不影响连接」的开关（面板「功能设置」的 AI 对话 / 消息转发
-        # 项）时走落盘 + 就地生效：热重载会断开全部连接、重启监控采集与内置
-        # 图床，代价与收益不匹配。定位键（index / server_name）不计入改动集合；
+        # 仅改动「不影响连接」的开关（面板「功能设置」的消息转发等项）时走
+        # 落盘 + 就地生效：热重载会断开全部连接、重启监控采集与内置图床，
+        # 代价与收益不匹配。定位键（index / server_name）不计入改动集合；
         # message 子对象展开为其内部转发键参与判定
-        soft_keys = tuple(
-            getattr(self.plugin, "SOFT_CONFIG_KEYS", ("enable_ai_chat", "ai_chat_prefix"))
-        )
+        soft_keys = tuple(getattr(self.plugin, "SOFT_CONFIG_KEYS", ()))
         changed_keys = set(payload) - {"index", "server_name"}
         if "message" in changed_keys:
             changed_keys.discard("message")
