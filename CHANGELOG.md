@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.2 (2026-11-19)
+
+> 修复新版 NeoForge 的 TPS 不可用，并修正 Forge/NeoForge 主世界查询指令
+
+### 修复
+- **新版 NeoForge 服务器 TPS 显示不可用**：NeoForge 1.21 起的 `/neoforge tps` 输出改为 `Overall: 20.000 TPS (6.167 ms/tick)`，此前只认旧版文本，面板一直显示 TPS 不可用；现在新旧输出都能取到 Overall 的 TPS 值
+- **Forge/NeoForge 主世界 TPS 查询指令写错**：查询主世界的短指令写法有误，会回退到完整多维度输出；现已修正，查询只返回主世界一行，避免长回包被截断
+
 ## v0.9.1 (2026-11-11)
 
 > 修复 v0.9.0 直连 RCON 无法连接、插件启动与面板读取奇慢的问题

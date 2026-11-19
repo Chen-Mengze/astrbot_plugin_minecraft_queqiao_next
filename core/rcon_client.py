@@ -28,10 +28,12 @@ _PLAYER_LIST_RE = re.compile(
     r"There\s+are\s+\d+\s+of\s+a\s+max\s+of\s+\d+\s+players\s+online\s*:\s*([^\r\n]*)",
     re.IGNORECASE,
 )
-# TPS 输出特征：串扰自愈时用来判断「这条输出其实是 TPS 指令的回包」
+# TPS 输出特征：串扰自愈时用来判断「这条输出其实是 TPS 指令的回包」；
+# 最后一条覆盖新版 NeoForge：`Overall: 20.000 TPS (6.167 ms/tick)`
 _TPS_HINT_RES = (
     re.compile(r"Mean\s+TPS\s*:", re.IGNORECASE),
     re.compile(r"TPS\s+from\s+last", re.IGNORECASE),
+    re.compile(r"\b\d+(?:\.\d+)?\s*TPS\b", re.IGNORECASE),
 )
 
 

@@ -2,12 +2,11 @@
 
 设计要点：
 1. **数据源**：
-   - TPS：经 RCON 执行 TPS 指令（默认 ``auto``，按 get_status / SLP / 实测
-     指令多源识别的服务端品牌确定候选：Forge → ``forge tps``，NeoForge →
-     ``neoforge tps`` / ``forge tps``，Fabric/Quilt → ``spark tps``，Bukkit
-     系 → ``tps``；品牌识别不到或指令失效时依次尝试通用兜底指令）。解析
-     Bukkit 三档值（1m / 5m / 15m）与 Forge/NeoForge 单值 Mean TPS。执行走
-     ``execute_command_with_channel``，自动继承「鹊桥 RCON → 直连 RCON」兜底
+   - TPS：经 RCON 执行 TPS 指令（默认「auto」，按 get_status / SLP / 实测
+     指令多源识别的服务端品牌确定候选）。各加载器的指令与输出解析在
+     services/tps/ 内按加载器分模块维护（Bukkit / Spark / Forge /
+     NeoForge，互不共用）；本模块只负责执行、缓存与容错。执行走
+     execute_command_with_channel，自动继承「鹊桥 RCON → 直连 RCON」兜底
      与「超时 ≠ 失败，禁止重发」语义。
    - 延迟：**直连服务器**执行 Minecraft SLP ping（服务端状态协议握手 + 状态
      请求往返，ms）——与玩家客户端看到的延迟同一测量口径，不经鹊桥中转，
@@ -58,33 +57,16 @@ from ..core.constants import (
 from ..core.models_config import ServerConfig
 from ..core.rcon_client import looks_like_player_list
 from .slp_ping import brand_from_slp, brand_from_text, mc_ping
+from .tps import (
+    brand_from_tps_command,
+    is_long_tps_command,
+    parse_tps,
+    tps_command_candidates,
+)
 
 if TYPE_CHECKING:
     from ..core.server_manager import ServerManager
 
-# TPS 标准输出：`TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0`
-# Paper/Spigot/spark 均含该行；前缀可能带颜色代码或其它装饰。窗口列表可能
-# 更长（`1m, 5m, 15m, 1h, 6h, 24h`），值可能带 `*` 标记（spark 标注采样未满）
-_TPS_RE = re.compile(
-    r"TPS\s+from\s+last\s+[^:\r\n]*:\s*([\d.]+)\*?\s*,\s*([\d.]+)\*?\s*,"
-    r"\s*([\d.]+)\*?",
-    re.IGNORECASE,
-)
-# 兜底：无前缀的旧版输出（行内恰好三个逗号分隔的浮点数），但必须处于
-# TPS 语境，避免把玩家名/其它数字行误判为 TPS
-_TPS_BARE_RE = re.compile(r"([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)")
-# Forge / NeoForge 的 tps 指令输出：每维度一行形如
-# Dim minecraft:overworld (minecraft:overworld): Mean tick time: 2.793 ms. Mean TPS: 20.000
-# 末尾是 Overall: Mean tick time: 4.424 ms. Mean TPS: 20.000。
-# 它只有单值均值（Forge 没有 1m/5m/15m 三档），优先取 Overall 行；
-# 无 Overall（旧版/输出被截断）时取首条维度行
-_FORGE_OVERALL_RE = re.compile(
-    r"Overall\s*:[^\r\n]*?Mean\s+TPS\s*:\s*([\d.]+)", re.IGNORECASE
-)
-_FORGE_TPS_RE = re.compile(r"Mean\s+TPS\s*:\s*([\d.]+)", re.IGNORECASE)
-# 裸三数兜底只接受合理 TPS 区间：避免把玩家名/其它数字行误判为 TPS
-_TPS_VALUE_MIN = 0.0
-_TPS_VALUE_MAX = 20.5  # TPS 上限 20，留一点四舍五入余量
 # server_name 转安全文件名：仅保留字母数字、_、-、.，其余替换为 _
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.\-]+")
 
@@ -96,129 +78,15 @@ METRIC_LATENCY = "latency"
 MONITOR_METRICS = (METRIC_TPS, METRIC_TPS_5M, METRIC_TPS_15M, METRIC_LATENCY)
 
 
-def parse_tps(
-    output: str | None,
-) -> tuple[float | None, float | None, float | None] | None:
-    """解析服务端 tps 指令输出为 ``(1m, 5m, 15m)``；无法解析返回 None。
-
-    兼容格式：
-    - Paper/Spigot：``TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0``
-    - spark：前缀带装饰（如 ``⏱  TPS from last...``），同一正则命中
-    - Forge/NeoForge：`Overall: Mean tick time: 4.4 ms. Mean TPS: 20.000`
-      （单值均值，无 1m/5m/15m 三档；返回 `(20.0, None, None)`，
-      无 Overall 行时取首条维度行）
-    - 旧版裸三数（前提是行内含 "TPS" 字样，避免误伤其它输出）
-    - 原版端 ``Unknown command`` / 指令被拒 → None
-    """
-    if not output:
-        return None
-    # 颜色码可能嵌在数字/关键字中间（RCON 回传带 § 或 ANSI），先统一剥离；
-    # 长输出被截断到行中间时，完整的前几行仍可正常解析（Forge 取首条维度行）
-    text = strip_format_codes(output).strip()
-    matched = _TPS_RE.search(text)
-    if matched:
-        values = matched.groups()
-        return (float(values[0]), float(values[1]), float(values[2]))
-    # Forge/NeoForge 只提供单值 Mean TPS（无 1m/5m/15m 三档）
-    forge = _FORGE_OVERALL_RE.search(text) or _FORGE_TPS_RE.search(text)
-    if forge:
-        return float(forge.group(1)), None, None
-    if "TPS" in text.upper():
-        bare = _TPS_BARE_RE.search(text)
-        if bare:
-            values = tuple(float(group) for group in bare.groups())
-            if all(_TPS_VALUE_MIN <= value <= _TPS_VALUE_MAX for value in values):
-                return values
-    return None
-
-
 def safe_server_name(server_name: str) -> str:
     """把 server_name 转为安全的目录/文件名（保留可读性，避免路径注入）。"""
     cleaned = _SAFE_NAME_RE.sub("_", server_name or "").strip("._")
     return cleaned or "server"
 
 
-# auto 模式的通用兜底指令：品牌识别可能被 MOTD 广告文本误导，或用户
-# 更换过服务端核心，品牌指令失败后依次尝试这些常用指令（去重后追加在品牌候选后）
-_AUTO_FALLBACK_COMMANDS = ("tps", "forge tps", "spark tps")
 # 品牌来源优先级：get_status（服务端自报，最权威）> TPS 指令实测 > SLP
 # 版本名/MOTD。高优先级可覆盖低优先级，反向不覆盖（MOTD 常混入其它品牌名）
 _BRAND_SOURCE_PRIORITY = {"status": 3, "command": 2, "slp": 1}
-# Forge/NeoForge 的 tps 指令支持 `dim <维度>` 子命令，只返回一行：
-# `forge tps dim minecraft:overworld` → `Dim minecraft:overworld (...): Mean TPS: 20.000`。
-# 完整 `forge tps` 会列出全部维度，大型整合包输出数 KB，超过单个 RCON
-# 响应包上限（4096 字节）后会被服务端拆包；部分 RCON 客户端只读首个回包，
-# 余包会串到下一条指令，造成 TPS 解析失败或把 TPS 文本当成玩家列表。
-# 因此 Forge/NeoForge 统一优先单维度短输出，完整指令仅作兜底。
-_FORGE_SHORT_COMMAND_ARGS = "dim minecraft:overworld"
-# 完整 Forge tps 指令（输出所有维度，长输出会被服务端拆包）
-_LONG_FORGE_COMMANDS = ("forge tps", "neoforge tps")
-
-
-def tps_command_candidates(
-    server_type: str | None, preference: str
-) -> list[str]:
-    """auto 模式下按服务端品牌给出候选 TPS 指令（按尝试顺序）。
-
-    - NeoForge：``neoforge tps`` → ``forge tps``
-    - Forge：``forge tps``
-    - Fabric/Quilt：``spark tps``（无内置 tps 指令，须装 Spark 模组）
-    - Paper/Spigot/Bukkit 等布克特系：``tps``
-    - 未知/无缓存：从 ``tps`` 起步
-
-    Forge/NeoForge 优先用 ``dim <主世界>`` 短输出形式：完整 tps 输出会列出
-    全部维度，大型整合包可达数 KB，超过单个 RCON 响应包上限后会被截断（部分
-    客户端只读首个回包，余包还会串到下一条指令，导致 TPS 解析失败或把 TPS
-    文本当成玩家列表）。单维度回包只有一行，不会触发这个问题；不支持该子
-    指令时再回退完整形式。
-
-    末尾统一追加通用兜底指令（去重）：采集侧执行到能解析出数值的指令为止，
-    品牌识别错误时仍能采到 TPS。显式填写具体指令时只返回该指令，不做自动
-    回退，保证行为可预期。
-    """
-    pref = (preference or "").strip()
-    if pref and pref.lower() != "auto":
-        return [pref]
-    brand = brand_from_text(server_type) if server_type else None
-    if brand == "neoforge":
-        forge_commands = ["neoforge tps", "forge tps"]
-    elif brand == "forge":
-        forge_commands = ["forge tps"]
-    else:
-        forge_commands = []
-    if forge_commands:
-        first = [
-            f"{command} {_FORGE_SHORT_COMMAND_ARGS}" for command in forge_commands
-        ] + forge_commands
-    elif brand in ("fabric", "quilt"):
-        first = ["spark tps"]
-    elif brand:
-        # 其余布克特系品牌（paper/spigot/purpur/folia 等）原生支持 tps
-        first = ["tps"]
-    else:
-        first = []
-    return first + [cmd for cmd in _AUTO_FALLBACK_COMMANDS if cmd not in first]
-
-
-def resolve_tps_command(server_type: str | None, preference: str) -> str:
-    """解析 auto 模式下优先执行的 TPS 指令（候选列表首个）。"""
-    return tps_command_candidates(server_type, preference)[0]
-
-
-def brand_from_tps_command(command: str) -> str | None:
-    """从实测成功的 TPS 指令反推服务端品牌；仅 forge/neoforge 可唯一确定。
-
-    spark tps 在 Fabric/Quilt/Paper 上都可能可用，tps 覆盖整个布克特系，
-    均不足以反推具体品牌。
-    """
-    normalized = " ".join((command or "").lower().split())
-    if normalized.endswith(_FORGE_SHORT_COMMAND_ARGS):
-        normalized = normalized[: -len(_FORGE_SHORT_COMMAND_ARGS)].strip()
-    if normalized == "neoforge tps":
-        return "neoforge"
-    if normalized == "forge tps":
-        return "forge"
-    return None
 
 
 @dataclass
@@ -1022,7 +890,7 @@ class MonitorCollector:
         output, _ = await instance.execute_command_with_channel(command)
         if output is None:
             return None, None
-        parsed = parse_tps(output)
+        parsed = parse_tps(output, self._server_types.get(name))
         if parsed is not None:
             return parsed, output
         if looks_like_player_list(output):
@@ -1032,7 +900,10 @@ class MonitorCollector:
             )
             retry_output, _ = await instance.execute_command_with_channel(command)
             if retry_output is not None:
-                return parse_tps(retry_output), retry_output
+                return (
+                    parse_tps(retry_output, self._server_types.get(name)),
+                    retry_output,
+                )
         return None, output
 
     async def _sample_tps(
@@ -1045,7 +916,7 @@ class MonitorCollector:
         **通道失败（超时/未连接）不换指令重发**——按「超时不等于失败」语义，
         换一条指令重发只会在服务器上多执行一条命令。
 
-        缓存里的完整 `forge tps`（长输出）不再优先复用：优先短输出候选，
+        缓存里的完整 tps 指令（长输出）不再优先复用：优先单维度短输出候选，
         避免长回包被 RCON 截断后把余包留给后续指令造成串扰。
         """
         candidates = tps_command_candidates(
@@ -1054,7 +925,7 @@ class MonitorCollector:
         cached = self._tps_commands.get(name)
         if cached and cached in candidates:
             candidates.remove(cached)
-            if cached in _LONG_FORGE_COMMANDS:
+            if is_long_tps_command(cached):
                 candidates.append(cached)
             else:
                 candidates.insert(0, cached)
@@ -1074,7 +945,11 @@ class MonitorCollector:
             if parsed is not None:
                 self._tps_commands[name] = command
                 self._tps_retry_after.pop(name, None)
-                self._remember_brand(name, brand_from_tps_command(command), "command")
+                self._remember_brand(
+                    name,
+                    brand_from_tps_command(command, self._server_types.get(name)),
+                    "command",
+                )
                 return parsed, None
             last_output = output
         self._tps_retry_after[name] = time.monotonic() + MONITOR_TPS_RETRY_SECONDS

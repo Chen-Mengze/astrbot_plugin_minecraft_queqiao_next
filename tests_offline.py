@@ -3168,10 +3168,15 @@ from astrbot_plugin_minecraft_queqiao_next.services.monitor import (
     MonitorSample as _MS35,
     MonitorSettings as _MSettings35,
     MonitorStore as _MStore35,
+    safe_server_name as _safe_name35,
+)
+from astrbot_plugin_minecraft_queqiao_next.services import tps as _tps35
+from astrbot_plugin_minecraft_queqiao_next.services.tps import (
     brand_from_tps_command as _brand_cmd35,
+    forge as _forge_mod35,
+    neoforge as _neo_mod35,
     parse_tps as _parse_tps35,
     resolve_tps_command as _resolve_tps35,
-    safe_server_name as _safe_name35,
     tps_command_candidates as _tps_cands35,
 )
 from astrbot_plugin_minecraft_queqiao_next.services.slp_ping import (
@@ -3207,6 +3212,31 @@ assert _parse_tps35(_FORGE_OUT35)[0] != 20.0, "维度行数值不应盖过 Overa
 assert _parse_tps35(
     "Dim x (y): Mean tick time: 2.7 ms. Mean TPS: 19.5") == (19.5, None, None)
 assert _parse_tps35("§aOverall: Mean tick time: 4.4 ms. Mean TPS: 20.0") == (20.0, None, None)
+
+# 新版 NeoForge（1.21+）：每维度 Overworld: 20.000 TPS (2.000 ms/tick)，
+# 末行 Overall: 20.000 TPS (6.167 ms/tick)。只取 Overall 单值；维度行
+# 标签可能带命名空间冒号，输出前还可能带服务端日志前缀
+_NEOFORGE_NEW35 = (
+    "[07:32:51] [Server thread/INFO] [minecraft/MinecraftServer]: "
+    "Overworld: 20.000 TPS (2.000 ms/tick)\n"
+    "[07:32:51] [Server thread/INFO] [minecraft/MinecraftServer]: "
+    "gensokyolegacy:gensokyo: 19.500 TPS (0.654 ms/tick)\n"
+    "[07:32:51] [Server thread/INFO] [minecraft/MinecraftServer]: "
+    "Overall: 18.750 TPS (6.167 ms/tick)"
+)
+assert _parse_tps35(_NEOFORGE_NEW35) == (18.75, None, None), \
+    "新版 NeoForge 必须取 Overall，而不是首条维度行"
+assert _parse_tps35("Overall: 20.000 TPS (6.167 ms/tick)") == (20.0, None, None)
+# 输出被截断到 Overall 之前：取首条维度行
+assert _parse_tps35("Overworld: 19.500 TPS (2.000 ms/tick)") == (19.5, None, None)
+# 颜色码嵌在标签/数值/单位之间也能解析（strip_format_codes 先剥离）
+assert _parse_tps35("§aOverall: §220.000 TPS§r (6.167 ms/tick)") == (20.0, None, None)
+# 两个加载器的模块各自独立解析：Forge 不认 NeoForge 新格式
+assert _forge_mod35.parse("Overall: 20.000 TPS (6.167 ms/tick)") is None, \
+    "Forge 模块不得共用 NeoForge 新格式的解析"
+assert _forge_mod35.parse("Overall: Mean tick time: 4.4 ms. Mean TPS: 19.5") == (19.5, None, None)
+assert _neo_mod35.parse("Overall: 20.000 TPS (6.167 ms/tick)") == (20.0, None, None)
+assert _neo_mod35.parse("Overall: Mean tick time: 4.4 ms. Mean TPS: 19.5") == (19.5, None, None)
 
 # (b) ServerConfig 监控配置：默认值 / 显式配置 / 非法值兜底
 _sc35_default = _SC35.from_dict({})
@@ -3252,19 +3282,21 @@ assert _MSettings35.from_dict({"auto_refresh_interval": 1}).auto_refresh_interva
 assert _MSettings35.from_dict({"auto_refresh_interval": 99999}).auto_refresh_interval == 3600
 assert _MSettings35.from_dict({}).auto_refresh_interval == 10
 # auto 指令解析：按服务端品牌生成候选指令（首个优先执行，失败依次回退）
-assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps dim minecraft:overworld", \
+assert _resolve_tps35("forge 1.20.1", "auto") == "forge tps minecraft:overworld", \
     "Forge 优先单维度短输出，避免完整维度列表的长回包被截断"
 assert _resolve_tps35("Paper 1.20.4", "") == "tps"
 assert _resolve_tps35("Fabric 0.14.21", "auto") == "spark tps", "Fabric 无内置 tps，用 spark"
 assert _resolve_tps35("spigot 1.16.5", "auto") == "tps"
 assert _resolve_tps35(None, "auto") == "tps", "未知/无缓存一律默认尝试 tps"
 assert _resolve_tps35("forge 1.20.1", "spark tps") == "spark tps", "显式指令优先于自动"
-# NeoForge 必须先试 neoforge tps（识别成 forge 会执行错误指令），且优先短输出
-assert _tps_cands35("NeoForge 21.1.0", "auto")[:2] == [
-    "neoforge tps dim minecraft:overworld", "forge tps dim minecraft:overworld"]
+# NeoForge 必须先试 neoforge tps（识别成 forge 会执行错误指令），短输出在前；
+# 旧版 NeoForge 兼容 forge tps，故同时列入品牌候选
+assert _tps_cands35("NeoForge 21.1.0", "auto")[:4] == [
+    "neoforge tps minecraft:overworld", "forge tps minecraft:overworld",
+    "neoforge tps", "forge tps"]
 # 品牌指令后追加通用兜底（去重）：品牌识别错误时仍有机会采到 TPS
 assert _tps_cands35("forge 1.20.1", "auto") == [
-    "forge tps dim minecraft:overworld", "forge tps", "tps", "spark tps"]
+    "forge tps minecraft:overworld", "forge tps", "tps", "spark tps"]
 assert _tps_cands35("Fabric 1.20.1", "auto") == ["spark tps", "tps", "forge tps"]
 assert _tps_cands35(None, "auto") == ["tps", "forge tps", "spark tps"]
 assert _tps_cands35("purpur 1.20.4", "auto")[0] == "tps"
@@ -3274,6 +3306,14 @@ assert _tps_cands35("forge 1.20.1", "tps") == ["tps"]
 assert _brand_cmd35("forge tps") == "forge"
 assert _brand_cmd35("neoforge tps") == "neoforge"
 assert _brand_cmd35("spark tps") is None and _brand_cmd35("tps") is None
+
+# 加载器拆分：各模块只负责自己的指令与解析，长输出指令单独标记
+assert [provider.name for provider in _tps35.PROVIDERS] == [
+    "bukkit", "spark", "forge", "neoforge"]
+assert _tps35.is_long_tps_command("forge tps") is True
+assert _tps35.is_long_tps_command("forge tps minecraft:overworld") is False
+assert _tps35.is_long_tps_command("neoforge tps") is True
+assert _tps35.is_long_tps_command("neoforge tps minecraft:overworld") is False
 
 # (b2) SLP 直连 ping 端到端：本地起一个伪造 MC 状态服务端，真实走协议
 def _mc_varint_enc35(value):
@@ -3526,6 +3566,16 @@ _sm35.add("SrvStatus", _FakeInst35(
     connected=True, rcon_out=_FORGE_LINE35,
     status_model=_SStat35.from_dict(
         {"server_type": "forge", "server_version": "1.20.1"})))
+
+# 新版 NeoForge（1.21+）：新输出格式 + 品牌自报，首轮即用主世界短指令
+_NEOFORGE_LINE35 = (
+    "Overworld: 20.000 TPS (2.000 ms/tick)\n"
+    "Overall: 19.750 TPS (6.167 ms/tick)"
+)
+_sm35.add("SrvNeo", _FakeInst35(
+    connected=True, rcon_out=_NEOFORGE_LINE35,
+    status_model=_SStat35.from_dict(
+        {"server_type": "NeoForge 21.1.0", "server_version": "21.1.0"})))
 # 通道失败（output=None）：不得换指令重发（超时 ≠ 失败，避免重复执行）
 _sm35.add("SrvNull", _FakeInst35(connected=True, rcon_out=None))
 _cfg35_forge = _SC35.from_dict({"monitor": {"enabled": False}})
@@ -3537,7 +3587,7 @@ async def _d35():
     _col35.start({"Srv": _cfg35_on, "SrvBad": _cfg35_forge, "SrvOld": _cfg35_forge,
                   "SrvSlow": _cfg35_forge, "SrvDown": _cfg35_forge,
                   "SrvForge": _cfg35_forge, "SrvStatus": _cfg35_forge,
-                  "SrvNull": _cfg35_forge})
+                  "SrvNeo": _cfg35_forge, "SrvNull": _cfg35_forge})
     # 延迟探测地址必须显式配置（留空不探测，避免测出内网假低延迟）；
     # 模拟用户填了公网域名（品牌识别/延迟都依赖 SLP ping）
     _col35.apply_settings("Srv", {"ping_host": "mc.example.com"})
@@ -3616,10 +3666,10 @@ async def _d35():
     assert _col35.store.latest("SrvForge").tps1 == 20.0
     assert _col35.store.latest("SrvForge").tps5 is None, "Forge 单值没有 5m 档"
     await _smp("SrvForge")
-    assert _sm35.get("SrvForge").commands[-1] == "forge tps dim minecraft:overworld", \
+    assert _sm35.get("SrvForge").commands[-1] == "forge tps minecraft:overworld", \
         "后续轮次使用缓存的单维度短输出指令"
     assert _col35.status("SrvForge")["tps_command_resolved"] \
-        == "forge tps dim minecraft:overworld"
+        == "forge tps minecraft:overworld"
     assert _col35.status("SrvForge")["server_type"] == "forge"
     # 显式指令优先于自动选择，且不走候选回退
     _col35.apply_settings("SrvForge", {"tps_command": "spark tps"})
@@ -3631,10 +3681,16 @@ async def _d35():
     # get_status 自报品牌：不依赖延迟探测域名，首轮即执行单维度短输出
     _col35._ping = None
     await _smp("SrvStatus")
-    assert _sm35.get("SrvStatus").commands == ["forge tps dim minecraft:overworld"], \
+    assert _sm35.get("SrvStatus").commands == ["forge tps minecraft:overworld"], \
         "get_status 识别到 forge 后首轮即用短输出指令"
     assert _col35.status("SrvStatus")["server_type"] == "forge"
     assert _col35.store.latest("SrvStatus").tps1 == 20.0
+    # 新版 NeoForge：品牌自报 → 首轮执行主世界短指令，解析 Overall 单值
+    await _smp("SrvNeo")
+    assert _sm35.get("SrvNeo").commands == ["neoforge tps minecraft:overworld"], \
+        "NeoForge 1.21 首轮即用主世界短输出"
+    assert _col35.store.latest("SrvNeo").tps1 == 19.75
+    assert _col35.status("SrvNeo")["server_type"] == "neoforge"
     # 通道失败（output=None）：只尝试首个候选，不换指令重发
     await _smp("SrvNull")
     assert _sm35.get("SrvNull").commands == ["tps"], \
@@ -7313,6 +7369,8 @@ from astrbot_plugin_minecraft_queqiao_next.core.server_manager import (
 )
 from astrbot_plugin_minecraft_queqiao_next.services.monitor import (
     MonitorCollector as _MC61,
+)
+from astrbot_plugin_minecraft_queqiao_next.services.tps import (
     brand_from_tps_command as _brand61,
     parse_tps as _parse_tps61,
     tps_command_candidates as _cands61,
@@ -7327,6 +7385,8 @@ _FORGE_LEAK61 = (
 )
 assert _RC61.parse_player_list(_FORGE_LEAK61) is None, "TPS 长回包不得解析成玩家名"
 assert _looks_tps61(_FORGE_LEAK61) and not _looks_pl61(_FORGE_LEAK61)
+assert _looks_tps61("Overall: 20.000 TPS (6.167 ms/tick)"), \
+    "新版 NeoForge 回包也要识别为 TPS 文本"
 assert _RC61.parse_player_list("TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0") is None
 assert _RC61.parse_player_list(
     "There are 2 of a max of 20 players online: Alice, Bob") == ["Alice", "Bob"]
@@ -7353,21 +7413,26 @@ assert _parse_tps61(
 # 截断到行中间的 Forge 输出：首行完整即可解析
 assert _parse_tps61(
     _FORGE_LEAK61[: _FORGE_LEAK61.index("Dim ageofmythology")]) == (20.0, None, None)
+# 新版 NeoForge 回包（1.21+）同样解析，取 Overall 单值
+assert _parse_tps61(
+    "Overworld: 19.5 TPS (2.0 ms/tick)\nOverall: 18.75 TPS (6.167 ms/tick)"
+) == (18.75, None, None)
+
 # 玩家列表文本不得被当 TPS；裸三数越界（误判场景）不采信
 assert _parse_tps61("There are 2 of a max of 20 players online: Alice, Bob") is None
 assert _parse_tps61("TPS: 20.0, 30.0, 25.0") is None
 
-# (c) Forge/NeoForge 一律优先 dim 主世界短输出（单行，不会触发长回包
+# (c) Forge/NeoForge 一律优先主世界单维度短输出（单行，不会触发长回包
 # 截断/串包），完整指令仅作兜底；其它品牌与显式指令不受影响
 assert _cands61("forge 1.20.1", "auto")[:2] == [
-    "forge tps dim minecraft:overworld", "forge tps"]
+    "forge tps minecraft:overworld", "forge tps"]
 assert _cands61("NeoForge 21.1.0", "auto")[:2] == [
-    "neoforge tps dim minecraft:overworld", "forge tps dim minecraft:overworld"]
+    "neoforge tps minecraft:overworld", "forge tps minecraft:overworld"]
 assert _cands61("Paper 1.20.4", "auto") == ["tps", "forge tps", "spark tps"]
 assert _cands61("forge 1.20.1", "spark tps") == ["spark tps"], \
     "显式指令不受短输出策略影响"
-assert _brand61("forge tps dim minecraft:overworld") == "forge"
-assert _brand61("neoforge tps dim minecraft:overworld") == "neoforge"
+assert _brand61("forge tps minecraft:overworld") == "forge"
+assert _brand61("neoforge tps minecraft:overworld") == "neoforge"
 
 # (d) 回归守卫：直连 RCON 必须使用稳定的 aio-mc-rcon 惰性实现。
 # v0.9.0 曾自实现 RCON 协议，鉴权包类型判断错误导致连接不上、启动被

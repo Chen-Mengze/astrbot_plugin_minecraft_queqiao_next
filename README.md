@@ -1,7 +1,7 @@
 <div align="center">
 <h1>Minecraft 鹊桥互通</h1>
 <p><strong>通过鹊桥模组连接 Minecraft 服务器，实现消息互通、图片互通与服务器管理</strong></p>
-<p><img alt="version" src="https://img.shields.io/badge/version-v0.9.1-blue"></p>
+<p><img alt="version" src="https://img.shields.io/badge/version-v0.9.2-blue"></p>
 <p><sub>Minecraft &nbsp;&nbsp; 我的世界 &nbsp;&nbsp; 鹊桥 &nbsp;&nbsp; 消息互联 &nbsp;&nbsp; 图片互通 &nbsp;&nbsp; 群服互通</sub></p>
 <p><strong>中文</strong> &nbsp;/&nbsp; <a href="README_en.md">English</a></p>
 </div>
